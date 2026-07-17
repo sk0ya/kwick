@@ -10,6 +10,7 @@ pub struct Config {
     pub height: f32,
     pub scan_start_menu: bool,
     pub scan_path: bool,
+    pub system_commands: bool,
     pub scan_folders: Vec<ScanFolder>,
     pub commands: Vec<CustomCommand>,
     pub web_searches: Vec<WebSearch>,
@@ -24,6 +25,7 @@ impl Default for Config {
             height: 420.0,
             scan_start_menu: false,
             scan_path: false,
+            system_commands: true,
             scan_folders: Vec::new(),
             commands: Vec::new(),
             web_searches: Vec::new(),
@@ -102,6 +104,10 @@ scan_start_menu = false
 scan_path = false
 
 # よく使う Windows ツール(リモートデスクトップ、タスクマネージャー等)は常に検索対象です。
+
+# 電源系コマンド(シャットダウン、再起動、スリープ、休止状態、サインアウト、ロック)を
+# 検索対象に含めるか。
+system_commands = true
 
 # --- スキャンフォルダ(任意のフォルダを検索対象に追加) ---
 # path 直下から depth 階層まで走査し、extensions の拡張子を候補に追加します。

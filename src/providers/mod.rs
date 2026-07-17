@@ -119,6 +119,9 @@ pub fn scan_indexed(config: &Config) -> Vec<Item> {
         }));
     }
     items.extend(tools);
+    if config.system_commands {
+        items.extend(systools::power_items());
+    }
     items.extend(folders::scan(&config.scan_folders));
     if config.scan_path {
         // Skip PATH exes whose name is already covered by a Start Menu app.

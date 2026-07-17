@@ -94,6 +94,65 @@ pub fn scan() -> Vec<Item> {
     items
 }
 
+/// Power / session commands (shutdown, restart, sleep...). Gated by
+/// `system_commands` in config.toml (default: true).
+pub fn power_items() -> Vec<Item> {
+    let windir =
+        PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into()));
+    let sys32 = windir.join("System32");
+    let shutdown = sys32.join("shutdown.exe").display().to_string();
+    let rundll = sys32.join("rundll32.exe").display().to_string();
+
+    // (title, subtitle, match aliases, cmd, args)
+    let entries: &[(&str, &str, &str, &str, &str)] = &[
+        (
+            "シャットダウン",
+            "PC の電源を切る",
+            "shutdown power off",
+            &shutdown,
+            "/s /t 0",
+        ),
+        ("再起動", "PC を再起動する", "restart reboot", &shutdown, "/r /t 0"),
+        (
+            "スリープ",
+            "PC をスリープ状態にする",
+            "sleep suspend",
+            &rundll,
+            "powrprof.dll,SetSuspendState 0,1,0",
+        ),
+        ("休止状態", "PC を休止状態にする", "hibernate", &shutdown, "/h"),
+        (
+            "サインアウト",
+            "現在のユーザーをサインアウトする",
+            "sign out signout logoff logout",
+            &shutdown,
+            "/l",
+        ),
+        (
+            "ロック",
+            "画面をロックする",
+            "lock workstation",
+            &rundll,
+            "user32.dll,LockWorkStation",
+        ),
+    ];
+
+    let mut items = Vec::new();
+    for (title, subtitle, aliases, cmd, args) in entries {
+        let mut item = Item::new(
+            *title,
+            *subtitle,
+            Action::Exec {
+                cmd: (*cmd).to_string(),
+                args: Some((*args).to_string()),
+            },
+        );
+        finish(&mut item, title, aliases);
+        items.push(item);
+    }
+    items
+}
+
 fn push_file(items: &mut Vec<Item>, title: &str, aliases: &str, path: PathBuf) {
     if !path.exists() {
         return;
