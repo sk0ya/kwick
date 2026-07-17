@@ -339,13 +339,17 @@ impl eframe::App for KwickApp {
             return;
         }
 
-        // Keyboard navigation (consume before TextEdit sees the keys)
-        let (esc, enter, up, down) = ctx.input_mut(|i| {
+        // Keyboard navigation (consume before TextEdit sees the keys).
+        // Delete is only claimed while the query is empty (the most-used
+        // view), so it still edits text while typing a query.
+        let history_view = self.query.trim().is_empty();
+        let (esc, enter, up, down, del) = ctx.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                history_view && i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
             )
         });
         if esc {
@@ -365,8 +369,17 @@ impl eframe::App for KwickApp {
                 return;
             }
         }
+        if del {
+            if let Some(title) = self.results.get(self.selected).map(|it| it.title.clone()) {
+                let keep = self.selected;
+                self.history.remove(&title);
+                self.search();
+                self.selected = keep.min(self.results.len().saturating_sub(1));
+            }
+        }
 
         let mut clicked: Option<usize> = None;
+        let mut remove_from_history: Option<String> = None;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let edit = egui::TextEdit::singleline(&mut self.query)
@@ -390,6 +403,7 @@ impl eframe::App for KwickApp {
                 selected,
                 hotkey_notice,
                 lua,
+                history,
                 ..
             } = self;
             egui::ScrollArea::vertical()
@@ -446,6 +460,23 @@ impl eframe::App for KwickApp {
                         if frame_response.clicked() {
                             clicked = Some(i);
                         }
+                        if history.count(&item.title) > 0 {
+                            frame_response.context_menu(|ui| {
+                                if ui.button("履歴から削除").clicked() {
+                                    remove_from_history = Some(item.title.clone());
+                                    ui.close();
+                                }
+                            });
+                        }
+                    }
+
+                    if history_view && !results.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Del または右クリックで履歴から削除")
+                                .weak()
+                                .size(10.0),
+                        );
                     }
 
                     if let Some(notice) = hotkey_notice.as_deref() {
@@ -473,6 +504,14 @@ impl eframe::App for KwickApp {
         if let Some(i) = clicked {
             self.selected = i;
             self.execute_selected(ctx);
+        }
+        if let Some(title) = remove_from_history {
+            let keep = self.selected;
+            self.history.remove(&title);
+            if history_view {
+                self.search();
+                self.selected = keep.min(self.results.len().saturating_sub(1));
+            }
         }
     }
 }

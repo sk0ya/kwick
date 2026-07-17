@@ -20,6 +20,18 @@ impl History {
 
     pub fn bump(&mut self, key: &str) {
         *self.counts.entry(key.to_string()).or_insert(0) += 1;
+        self.save();
+    }
+
+    /// Forget an item entirely (drops it from the most-used view and
+    /// removes its score bonus).
+    pub fn remove(&mut self, key: &str) {
+        if self.counts.remove(key).is_some() {
+            self.save();
+        }
+    }
+
+    fn save(&self) {
         if let Ok(text) = toml::to_string(&self.counts) {
             let _ = std::fs::write(&self.path, text);
         }
