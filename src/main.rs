@@ -11,6 +11,7 @@ mod launch;
 mod lua_host;
 mod matcher;
 mod providers;
+mod startup;
 mod tray;
 mod winctl;
 

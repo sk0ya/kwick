@@ -2,7 +2,7 @@ use crate::winctl::WindowCtl;
 use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 #[derive(Default)]
@@ -24,10 +24,18 @@ pub fn init(
     let show = MenuItem::with_id("toggle", "表示 / 非表示", true, None);
     let settings = MenuItem::with_id("settings", "設定を開く", true, None);
     let reload = MenuItem::with_id("reload", "インデックス再読み込み", true, None);
+    let startup = CheckMenuItem::with_id(
+        "startup",
+        "スタートアップに登録",
+        true,
+        crate::startup::is_enabled(),
+        None,
+    );
     let quit = MenuItem::with_id("quit", "終了", true, None);
     let _ = menu.append(&show);
     let _ = menu.append(&settings);
     let _ = menu.append(&reload);
+    let _ = menu.append(&startup);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&quit);
 
@@ -59,6 +67,14 @@ pub fn init(
                         crate::launch::open_in_editor(&path.display().to_string());
                     }
                     "reload" => flags.reload.store(true, Ordering::SeqCst),
+                    // クリック時のチェック表示は muda が自動で反転するので、
+                    // レジストリ側も現在値の反転を書き込んで同期を保つ。
+                    "startup" => {
+                        let enable = !crate::startup::is_enabled();
+                        if !crate::startup::set_enabled(enable) {
+                            eprintln!("kwick: failed to update startup registration");
+                        }
+                    }
                     "quit" => std::process::exit(0),
                     _ => {}
                 }
