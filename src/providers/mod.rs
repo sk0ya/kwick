@@ -11,6 +11,8 @@ pub enum Action {
     Url(String),
     /// Index into the Lua host's current callback list
     Lua(usize),
+    /// Open config.toml in the user's editor
+    OpenConfig,
     Quit,
     Reload,
     RegisterStartup,
@@ -64,7 +66,14 @@ pub fn config_items(config: &Config) -> Vec<Item> {
 
 pub fn builtin_items() -> Vec<Item> {
     let cfg_dir = crate::config::config_dir().display().to_string();
+    let cfg_file = crate::config::config_dir()
+        .join("config.toml")
+        .display()
+        .to_string();
+    let mut settings = Item::new("Kwick: Settings", cfg_file, Action::OpenConfig);
+    settings.key = "Kwick: Settings config 設定".into();
     vec![
+        settings,
         Item::new("Kwick: Open Config Folder", cfg_dir.clone(), Action::Open(cfg_dir)),
         Item::new("Kwick: Reload Index", "アプリ一覧を再スキャン", Action::Reload),
         Item::new(

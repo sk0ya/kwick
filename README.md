@@ -32,6 +32,13 @@ cargo build --release
 
 `%APPDATA%\kwick\config.toml` — ウィンドウを表示するたびに再読み込みされるので、編集して即反映。
 
+開き方はどちらでも:
+
+- トレイアイコン右クリック →「設定を開く」
+- ランチャーで `settings`(または `config`)と入力 → `Kwick: Settings` を実行
+
+いずれも `config.toml` を関連付けられたエディタで開きます(関連付けがなければメモ帳)。
+
 ```toml
 hotkey = "alt+space"     # 例: "ctrl+alt+k", "win+space"
 max_results = 8

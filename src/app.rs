@@ -277,6 +277,11 @@ impl KwickApp {
                 shell_open(&cmd, args.as_deref());
             }
             Action::Url(url) => shell_open(&url, None),
+            Action::OpenConfig => {
+                self.history.bump(&title);
+                let path = config::config_dir().join("config.toml");
+                launch::open_in_editor(&path.display().to_string());
+            }
             Action::Lua(idx) => self.lua.run(idx),
             Action::RegisterStartup => launch::set_startup(true),
             Action::UnregisterStartup => launch::set_startup(false),

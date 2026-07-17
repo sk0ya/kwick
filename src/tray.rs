@@ -22,9 +22,11 @@ pub fn init(
 
     let menu = Menu::new();
     let show = MenuItem::with_id("toggle", "表示 / 非表示", true, None);
+    let settings = MenuItem::with_id("settings", "設定を開く", true, None);
     let reload = MenuItem::with_id("reload", "インデックス再読み込み", true, None);
     let quit = MenuItem::with_id("quit", "終了", true, None);
     let _ = menu.append(&show);
+    let _ = menu.append(&settings);
     let _ = menu.append(&reload);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&quit);
@@ -52,6 +54,10 @@ pub fn init(
             while let Ok(event) = rx.recv() {
                 match event.id.0.as_str() {
                     "toggle" => ctl.toggle(),
+                    "settings" => {
+                        let path = crate::config::config_dir().join("config.toml");
+                        crate::launch::open_in_editor(&path.display().to_string());
+                    }
                     "reload" => flags.reload.store(true, Ordering::SeqCst),
                     "quit" => std::process::exit(0),
                     _ => {}

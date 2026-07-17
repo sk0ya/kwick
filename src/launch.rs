@@ -30,6 +30,26 @@ pub fn set_startup(enable: bool) {
     let _ = cmd.creation_flags(CREATE_NO_WINDOW).status();
 }
 
+/// Open a text file in its associated editor, falling back to Notepad when
+/// the extension (e.g. .toml) has no association.
+pub fn open_in_editor(path: &str) {
+    let file = HSTRING::from(path);
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &file,
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW returns a value <= 32 on failure (SE_ERR_NOASSOC etc.)
+    if result.0 as isize <= 32 {
+        shell_open("notepad", Some(path));
+    }
+}
+
 /// Open a file/shortcut/folder/URL with its default handler, optionally with args.
 pub fn shell_open(file: &str, params: Option<&str>) {
     let file = HSTRING::from(file);
