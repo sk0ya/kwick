@@ -1,5 +1,6 @@
 use crate::config::{self, Config};
 use crate::history::History;
+use crate::icons::IconCache;
 use crate::launch::{self, shell_open};
 use crate::lua_host::LuaHost;
 use crate::matcher::Ranker;
@@ -26,6 +27,7 @@ pub struct KwickApp {
     selected: usize,
     needs_search: bool,
 
+    icons: IconCache,
     ctl: Arc<WindowCtl>,
     /// Visibility as of the previous frame, to detect "just shown".
     last_visible: bool,
@@ -81,6 +83,25 @@ fn register_hotkey(
             "ホットキーを登録できませんでした: {err}。タスクトレイのアイコンから開けます"
         )),
     )
+}
+
+/// Rounded square with the item's first letter, for items without a file icon.
+fn fallback_icon(ui: &mut egui::Ui, title: &str, size: egui::Vec2) {
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let initial = title
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".into());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 6.0, ui.visuals().faint_bg_color);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        initial,
+        egui::FontId::proportional(15.0),
+        ui.visuals().strong_text_color(),
+    );
 }
 
 fn win32_hwnd(cc: &eframe::CreationContext<'_>) -> isize {
@@ -148,6 +169,7 @@ impl KwickApp {
             results: Vec::new(),
             selected: 0,
             needs_search: start_visible,
+            icons: IconCache::new(cc.egui_ctx.clone()),
             ctl,
             last_visible: start_visible,
             history: History::load(),
@@ -361,11 +383,20 @@ impl eframe::App for KwickApp {
 
             ui.separator();
 
+            // Split borrows: the icon cache is written to while results are read.
+            let Self {
+                results,
+                icons,
+                selected,
+                hotkey_notice,
+                lua,
+                ..
+            } = self;
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for (i, item) in self.results.iter().enumerate() {
-                        let is_selected = i == self.selected;
+                    for (i, item) in results.iter().enumerate() {
+                        let is_selected = i == *selected;
                         let fill = if is_selected {
                             ui.visuals().selection.bg_fill
                         } else {
@@ -377,12 +408,35 @@ impl eframe::App for KwickApp {
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.label(egui::RichText::new(&item.title).strong().size(16.0));
-                                ui.label(
-                                    egui::RichText::new(&item.subtitle)
-                                        .weak()
-                                        .size(11.0),
-                                );
+                                ui.horizontal(|ui| {
+                                    let icon_size = egui::vec2(28.0, 28.0);
+                                    let texture = item
+                                        .icon_path
+                                        .as_deref()
+                                        .and_then(|p| icons.get(p));
+                                    match texture {
+                                        Some(tex) => {
+                                            ui.add(
+                                                egui::Image::new(&tex)
+                                                    .fit_to_exact_size(icon_size),
+                                            );
+                                        }
+                                        None => fallback_icon(ui, &item.title, icon_size),
+                                    }
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 1.0;
+                                        ui.label(
+                                            egui::RichText::new(&item.title)
+                                                .strong()
+                                                .size(16.0),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(&item.subtitle)
+                                                .weak()
+                                                .size(11.0),
+                                        );
+                                    });
+                                });
                             })
                             .response;
                         let frame_response = frame_response.interact(egui::Sense::click());
@@ -394,7 +448,7 @@ impl eframe::App for KwickApp {
                         }
                     }
 
-                    if let Some(notice) = &self.hotkey_notice {
+                    if let Some(notice) = hotkey_notice.as_deref() {
                         ui.separator();
                         ui.label(
                             egui::RichText::new(notice)
@@ -403,9 +457,9 @@ impl eframe::App for KwickApp {
                         );
                     }
 
-                    if !self.lua.errors.is_empty() {
+                    if !lua.errors.is_empty() {
                         ui.separator();
-                        for err in &self.lua.errors {
+                        for err in &lua.errors {
                             ui.label(
                                 egui::RichText::new(err)
                                     .color(ui.visuals().error_fg_color)

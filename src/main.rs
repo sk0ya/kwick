@@ -6,6 +6,7 @@ mod app;
 mod config;
 mod fonts;
 mod history;
+mod icons;
 mod launch;
 mod lua_host;
 mod matcher;

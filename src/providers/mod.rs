@@ -26,16 +26,24 @@ pub struct Item {
     /// Text used for fuzzy matching (usually the title, plus aliases)
     pub key: String,
     pub action: Action,
+    /// File whose shell icon represents this item (None = letter fallback)
+    pub icon_path: Option<String>,
 }
 
 impl Item {
     pub fn new(title: impl Into<String>, subtitle: impl Into<String>, action: Action) -> Self {
         let title = title.into();
+        let icon_path = match &action {
+            Action::Open(path) => Some(path.clone()),
+            Action::Exec { cmd, .. } => Some(cmd.clone()),
+            _ => None,
+        };
         Self {
             key: title.clone(),
             title,
             subtitle: subtitle.into(),
             action,
+            icon_path,
         }
     }
 }
