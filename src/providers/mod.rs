@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod pathbin;
+pub mod systools;
 
 use crate::config::Config;
 
@@ -28,6 +29,8 @@ pub struct Item {
     pub action: Action,
     /// File whose shell icon represents this item (None = letter fallback)
     pub icon_path: Option<String>,
+    /// Added to the fuzzy score so e.g. Start Menu apps outrank raw PATH exes
+    pub rank_boost: u32,
 }
 
 impl Item {
@@ -44,6 +47,7 @@ impl Item {
             subtitle: subtitle.into(),
             action,
             icon_path,
+            rank_boost: 0,
         }
     }
 }
@@ -98,10 +102,32 @@ pub fn builtin_items() -> Vec<Item> {
     ]
 }
 
-/// Heavy scan: start menu apps + PATH executables + builtins.
-pub fn scan_indexed() -> Vec<Item> {
-    let mut items = apps::scan();
-    items.extend(pathbin::scan());
+/// Heavy scan: start menu apps + system tools + PATH executables + builtins.
+pub fn scan_indexed(config: &Config) -> Vec<Item> {
+    let tools = systools::scan();
+    let mut items: Vec<Item> = Vec::new();
+    if config.scan_start_menu {
+        // Start Menu carries English shortcuts for some curated tools
+        // ("Task Scheduler", "Remote Desktop Connection", ...). The curated
+        // entry's key contains those English names, so drop the Start Menu
+        // duplicate and show only the curated one.
+        let tool_keys: Vec<String> = tools.iter().map(|t| t.key.to_lowercase()).collect();
+        items.extend(apps::scan().into_iter().filter(|it| {
+            let title = it.title.to_lowercase();
+            it.title.chars().count() < 4 || !tool_keys.iter().any(|k| k.contains(&title))
+        }));
+    }
+    items.extend(tools);
+    if config.scan_path {
+        // Skip PATH exes whose name is already covered by a Start Menu app.
+        let app_names: std::collections::HashSet<String> =
+            items.iter().map(|it| it.title.to_ascii_lowercase()).collect();
+        items.extend(
+            pathbin::scan()
+                .into_iter()
+                .filter(|it| !app_names.contains(&it.title.to_ascii_lowercase())),
+        );
+    }
     items.extend(builtin_items());
     items
 }

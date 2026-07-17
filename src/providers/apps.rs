@@ -34,11 +34,14 @@ pub fn scan() -> Vec<Item> {
             if !seen.insert(name.to_ascii_lowercase()) {
                 continue;
             }
-            items.push(Item::new(
+            let mut item = Item::new(
                 name,
                 "アプリ",
                 Action::Open(path.display().to_string()),
-            ));
+            );
+            // Installed apps should win over same-quality PATH exe matches.
+            item.rank_boost = 40;
+            items.push(item);
         }
     }
     items

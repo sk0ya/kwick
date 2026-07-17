@@ -152,7 +152,7 @@ impl KwickApp {
         };
         let (tray, tray_flags) = crate::tray::init(cc.egui_ctx.clone(), &tooltip, ctl.clone());
 
-        let mut indexed = providers::scan_indexed();
+        let mut indexed = providers::scan_indexed(&config);
         let config_items = providers::config_items(&config);
         let config_item_count = config_items.len();
         indexed.extend(config_items);
@@ -198,17 +198,22 @@ impl KwickApp {
 
     /// Cheap reload on every show: config file, custom commands, Lua plugins.
     fn reload_config(&mut self, ctx: &egui::Context) {
+        let scan_before = (self.config.scan_start_menu, self.config.scan_path);
         self.config = config::load();
-        self.indexed
-            .truncate(self.indexed.len() - self.config_item_count);
-        let config_items = providers::config_items(&self.config);
-        self.config_item_count = config_items.len();
-        self.indexed.extend(config_items);
+        if (self.config.scan_start_menu, self.config.scan_path) != scan_before {
+            self.rescan_index();
+        } else {
+            self.indexed
+                .truncate(self.indexed.len() - self.config_item_count);
+            let config_items = providers::config_items(&self.config);
+            self.config_item_count = config_items.len();
+            self.indexed.extend(config_items);
+        }
         self.lua = LuaHost::new(&config::plugin_dir(), ctx.clone());
     }
 
     fn rescan_index(&mut self) {
-        self.indexed = providers::scan_indexed();
+        self.indexed = providers::scan_indexed(&self.config);
         let config_items = providers::config_items(&self.config);
         self.config_item_count = config_items.len();
         self.indexed.extend(config_items);
@@ -263,7 +268,9 @@ impl KwickApp {
         let history = &self.history;
         for idx in self
             .ranker
-            .rank(&self.indexed, &query, remaining, |it| history.bonus(&it.title))
+            .rank(&self.indexed, &query, remaining, |it| {
+                history.bonus(&it.title) + it.rank_boost
+            })
         {
             self.results.push(self.indexed[idx].clone());
         }

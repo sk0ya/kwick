@@ -8,6 +8,8 @@ pub struct Config {
     pub max_results: usize,
     pub width: f32,
     pub height: f32,
+    pub scan_start_menu: bool,
+    pub scan_path: bool,
     pub commands: Vec<CustomCommand>,
     pub web_searches: Vec<WebSearch>,
 }
@@ -19,6 +21,8 @@ impl Default for Config {
             max_results: 8,
             width: 640.0,
             height: 420.0,
+            scan_start_menu: false,
+            scan_path: false,
             commands: Vec::new(),
             web_searches: Vec::new(),
         }
@@ -72,6 +76,15 @@ const DEFAULT_CONFIG: &str = r#"# Kwick 設定ファイル
 
 hotkey = "alt+space"
 max_results = 8
+
+# スタートメニューのアプリ (.lnk/.url) を検索対象に含めるか。
+scan_start_menu = false
+
+# PATH 上の実行ファイル (.exe/.bat/.cmd/.com) を検索対象に含めるか。
+# true にすると CLI ツールなども起動できますが、システムの exe が大量に候補に入ります。
+scan_path = false
+
+# よく使う Windows ツール(リモートデスクトップ、タスクマネージャー等)は常に検索対象です。
 
 # --- カスタムコマンド(コード不要) ---
 # [[commands]]
