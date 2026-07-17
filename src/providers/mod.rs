@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod folders;
 pub mod pathbin;
 pub mod systools;
 
@@ -102,7 +103,7 @@ pub fn builtin_items() -> Vec<Item> {
     ]
 }
 
-/// Heavy scan: start menu apps + system tools + PATH executables + builtins.
+/// Heavy scan: start menu apps + system tools + custom folders + PATH executables + builtins.
 pub fn scan_indexed(config: &Config) -> Vec<Item> {
     let tools = systools::scan();
     let mut items: Vec<Item> = Vec::new();
@@ -118,6 +119,7 @@ pub fn scan_indexed(config: &Config) -> Vec<Item> {
         }));
     }
     items.extend(tools);
+    items.extend(folders::scan(&config.scan_folders));
     if config.scan_path {
         // Skip PATH exes whose name is already covered by a Start Menu app.
         let app_names: std::collections::HashSet<String> =

@@ -10,6 +10,7 @@ pub struct Config {
     pub height: f32,
     pub scan_start_menu: bool,
     pub scan_path: bool,
+    pub scan_folders: Vec<ScanFolder>,
     pub commands: Vec<CustomCommand>,
     pub web_searches: Vec<WebSearch>,
 }
@@ -23,10 +24,26 @@ impl Default for Config {
             height: 420.0,
             scan_start_menu: false,
             scan_path: false,
+            scan_folders: Vec::new(),
             commands: Vec::new(),
             web_searches: Vec::new(),
         }
     }
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct ScanFolder {
+    pub path: String,
+    /// 何階層まで潜るか(1 = 直下のみ)。省略時は 3。
+    #[serde(default = "default_scan_depth")]
+    pub depth: usize,
+    /// 対象拡張子(小文字・ドットなし)。省略時は exe/lnk/bat/cmd/url。
+    #[serde(default)]
+    pub extensions: Option<Vec<String>>,
+}
+
+fn default_scan_depth() -> usize {
+    3
 }
 
 #[derive(Deserialize, Clone)]
@@ -85,6 +102,13 @@ scan_start_menu = false
 scan_path = false
 
 # よく使う Windows ツール(リモートデスクトップ、タスクマネージャー等)は常に検索対象です。
+
+# --- スキャンフォルダ(任意のフォルダを検索対象に追加) ---
+# path 直下から depth 階層まで走査し、extensions の拡張子を候補に追加します。
+# [[scan_folders]]
+# path = 'D:\Tools'
+# depth = 3                              # 省略時は 3(1 = 直下のみ)
+# extensions = ["exe", "lnk", "bat"]     # 省略時は exe/lnk/bat/cmd/url
 
 # --- カスタムコマンド(コード不要) ---
 # [[commands]]

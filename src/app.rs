@@ -198,9 +198,18 @@ impl KwickApp {
 
     /// Cheap reload on every show: config file, custom commands, Lua plugins.
     fn reload_config(&mut self, ctx: &egui::Context) {
-        let scan_before = (self.config.scan_start_menu, self.config.scan_path);
+        let scan_before = (
+            self.config.scan_start_menu,
+            self.config.scan_path,
+            self.config.scan_folders.clone(),
+        );
         self.config = config::load();
-        if (self.config.scan_start_menu, self.config.scan_path) != scan_before {
+        if (
+            self.config.scan_start_menu,
+            self.config.scan_path,
+            self.config.scan_folders.clone(),
+        ) != scan_before
+        {
             self.rescan_index();
         } else {
             self.indexed
