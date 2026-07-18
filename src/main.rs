@@ -46,14 +46,22 @@ fn main() -> eframe::Result {
     // --hidden: start resident without showing the window (used by startup registration)
     let start_visible = !std::env::args().any(|a| a == "--hidden");
     let cfg = config::load();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([cfg.width, cfg.height])
+        .with_decorations(false)
+        .with_always_on_top()
+        .with_resizable(false)
+        .with_taskbar(false)
+        .with_visible(start_visible);
+    if let Some((rgba, w, h)) = icons::app_icon_rgba() {
+        viewport = viewport.with_icon(egui::IconData {
+            rgba,
+            width: w as u32,
+            height: h as u32,
+        });
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([cfg.width, cfg.height])
-            .with_decorations(false)
-            .with_always_on_top()
-            .with_resizable(false)
-            .with_taskbar(false)
-            .with_visible(start_visible),
+        viewport,
         centered: true,
         ..Default::default()
     };

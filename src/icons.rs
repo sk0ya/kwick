@@ -55,6 +55,34 @@ impl IconCache {
     }
 }
 
+/// Load the app's own embedded icon (see build.rs) and convert it to RGBA
+/// pixels, for use as the tray icon and window icon.
+pub fn app_icon_rgba() -> Option<(Vec<u8>, usize, usize)> {
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DestroyIcon, LoadImageW, HICON, IMAGE_ICON, LR_DEFAULTCOLOR,
+    };
+    use windows::core::PCWSTR;
+
+    unsafe {
+        let hinstance = GetModuleHandleW(None).ok()?;
+        // winres embeds the .ico set via `set_icon` as resource id 1.
+        let handle = LoadImageW(
+            Some(hinstance.into()),
+            PCWSTR(1 as *const u16),
+            IMAGE_ICON,
+            32,
+            32,
+            LR_DEFAULTCOLOR,
+        )
+        .ok()?;
+        let hicon = HICON(handle.0);
+        let rgba = icon_to_rgba(hicon);
+        let _ = DestroyIcon(hicon);
+        rgba
+    }
+}
+
 /// Ask the shell for the file's icon and convert it to RGBA pixels.
 fn extract_rgba(path: &str) -> Option<(Vec<u8>, usize, usize)> {
     use windows::core::PCWSTR;

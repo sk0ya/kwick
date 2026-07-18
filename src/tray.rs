@@ -42,7 +42,8 @@ pub fn init(
     let mut builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip(tooltip);
-    if let Ok(icon) = tray_icon::Icon::from_rgba(icon_rgba(), 32, 32) {
+    let (rgba, w, h) = crate::icons::app_icon_rgba().unwrap_or_else(|| (icon_rgba(), 32, 32));
+    if let Ok(icon) = tray_icon::Icon::from_rgba(rgba, w as u32, h as u32) {
         builder = builder.with_icon(icon);
     }
     let tray = match builder.build() {
@@ -102,8 +103,8 @@ pub fn init(
     (tray, flags)
 }
 
-/// 32x32 RGBA icon: white "K" on a blue rounded square, generated in code
-/// so we don't need embedded assets.
+/// Fallback 32x32 RGBA icon (white "K" on a blue rounded square), used only
+/// if the embedded app icon (assets/icon.ico) fails to load.
 fn icon_rgba() -> Vec<u8> {
     const ART: [&str; 16] = [
         "................",
