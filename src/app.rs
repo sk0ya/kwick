@@ -120,6 +120,7 @@ impl KwickApp {
         crate::fonts::install_japanese_fallback(&cc.egui_ctx);
 
         // Keep the launcher easy on the eyes regardless of the OS theme.
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = egui::Color32::from_rgb(10, 10, 12);
         visuals.window_fill = egui::Color32::from_rgb(10, 10, 12);
