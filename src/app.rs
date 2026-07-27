@@ -119,6 +119,16 @@ impl KwickApp {
     pub fn new(cc: &eframe::CreationContext<'_>, start_visible: bool) -> Self {
         crate::fonts::install_japanese_fallback(&cc.egui_ctx);
 
+        // Keep the launcher easy on the eyes regardless of the OS theme.
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = egui::Color32::from_rgb(10, 10, 12);
+        visuals.window_fill = egui::Color32::from_rgb(10, 10, 12);
+        visuals.extreme_bg_color = egui::Color32::from_rgb(4, 4, 6);
+        visuals.faint_bg_color = egui::Color32::from_rgb(28, 28, 32);
+        visuals.selection.bg_fill = egui::Color32::from_rgb(45, 72, 110);
+        visuals.selection.stroke.color = egui::Color32::from_rgb(225, 235, 255);
+        cc.egui_ctx.set_visuals(visuals);
+
         let config = config::load();
 
         let hotkey_manager = GlobalHotKeyManager::new().expect("failed to init global hotkey");
