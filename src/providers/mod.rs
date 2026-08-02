@@ -13,6 +13,8 @@ pub enum Action {
     Url(String),
     /// Index into the Lua host's current callback list
     Lua(usize),
+    /// Show the in-window settings view
+    OpenSettings,
     /// Open config.toml in the user's editor
     OpenConfig,
     Quit,
@@ -83,10 +85,13 @@ pub fn builtin_items() -> Vec<Item> {
         .join("config.toml")
         .display()
         .to_string();
-    let mut settings = Item::new("Kwick: Settings", cfg_file, Action::OpenConfig);
+    let mut settings = Item::new("Kwick: Settings", "設定画面を開く", Action::OpenSettings);
     settings.key = "Kwick: Settings config 設定".into();
+    let mut edit_config = Item::new("Kwick: Edit config.toml", cfg_file, Action::OpenConfig);
+    edit_config.key = "Kwick: Edit config.toml 設定ファイル".into();
     vec![
         settings,
+        edit_config,
         Item::new("Kwick: Open Config Folder", cfg_dir.clone(), Action::Open(cfg_dir)),
         Item::new("Kwick: Reload Index", "アプリ一覧を再スキャン", Action::Reload),
         Item::new(
@@ -103,7 +108,20 @@ pub fn builtin_items() -> Vec<Item> {
     ]
 }
 
-/// Heavy scan: start menu apps + system tools + custom folders + PATH executables + builtins.
+/// Append `extra`, skipping entries whose name is already covered by `items`
+/// (e.g. a Start Menu app or a Chocolatey shim of the same name).
+fn extend_deduped(items: &mut Vec<Item>, extra: Vec<Item>) {
+    let existing: std::collections::HashSet<String> =
+        items.iter().map(|it| it.title.to_ascii_lowercase()).collect();
+    items.extend(
+        extra
+            .into_iter()
+            .filter(|it| !existing.contains(&it.title.to_ascii_lowercase())),
+    );
+}
+
+/// Heavy scan: start menu apps + system tools + custom folders + Chocolatey shims
+/// + PATH executables + builtins.
 pub fn scan_indexed(config: &Config) -> Vec<Item> {
     let tools = systools::scan();
     let mut items: Vec<Item> = Vec::new();
@@ -123,15 +141,12 @@ pub fn scan_indexed(config: &Config) -> Vec<Item> {
         items.extend(systools::power_items());
     }
     items.extend(folders::scan(&config.scan_folders));
+    // Chocolatey shims come first so they survive the dedupe against raw PATH exes.
+    if config.scan_chocolatey {
+        extend_deduped(&mut items, pathbin::scan_chocolatey());
+    }
     if config.scan_path {
-        // Skip PATH exes whose name is already covered by a Start Menu app.
-        let app_names: std::collections::HashSet<String> =
-            items.iter().map(|it| it.title.to_ascii_lowercase()).collect();
-        items.extend(
-            pathbin::scan()
-                .into_iter()
-                .filter(|it| !app_names.contains(&it.title.to_ascii_lowercase())),
-        );
+        extend_deduped(&mut items, pathbin::scan());
     }
     items.extend(builtin_items());
     items

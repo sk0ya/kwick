@@ -13,6 +13,7 @@ nucleo-matcher = "0.3"
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+toml_edit = "0.25"
 dirs = "6"
 walkdir = "2"
 global-hotkey = "0.6"

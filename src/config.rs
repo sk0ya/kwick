@@ -10,6 +10,7 @@ pub struct Config {
     pub height: f32,
     pub scan_start_menu: bool,
     pub scan_path: bool,
+    pub scan_chocolatey: bool,
     pub system_commands: bool,
     pub scan_folders: Vec<ScanFolder>,
     pub commands: Vec<CustomCommand>,
@@ -25,6 +26,7 @@ impl Default for Config {
             height: 420.0,
             scan_start_menu: false,
             scan_path: false,
+            scan_chocolatey: false,
             system_commands: true,
             scan_folders: Vec::new(),
             commands: Vec::new(),
@@ -90,8 +92,41 @@ pub fn load() -> Config {
     }
 }
 
+/// 設定 UI で編集できるスカラー項目を config.toml に書き戻す。
+///
+/// toml_edit で既存の文書を書き換えるので、コメントや
+/// [[scan_folders]] / [[commands]] / [[web_searches]] はそのまま残る。
+/// 未記載のキーは追記されるため、新しい設定項目が増えても
+/// 既存の config.toml が古いままにならない。
+pub fn save(config: &Config) -> Result<(), String> {
+    ensure_default_files();
+    let path = config_dir().join("config.toml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
+    let updated = apply_scalars(&text, config)?;
+    std::fs::write(&path, updated).map_err(|e| format!("config.toml を保存できません: {e}"))
+}
+
+fn apply_scalars(text: &str, config: &Config) -> Result<String, String> {
+    use toml_edit::{value, DocumentMut};
+
+    let mut doc: DocumentMut = text
+        .parse()
+        .map_err(|e| format!("config.toml を解釈できません: {e}"))?;
+    doc["hotkey"] = value(config.hotkey.as_str());
+    doc["max_results"] = value(config.max_results as i64);
+    doc["width"] = value(config.width as f64);
+    doc["height"] = value(config.height as f64);
+    doc["scan_start_menu"] = value(config.scan_start_menu);
+    doc["scan_path"] = value(config.scan_path);
+    doc["scan_chocolatey"] = value(config.scan_chocolatey);
+    doc["system_commands"] = value(config.system_commands);
+    Ok(doc.to_string())
+}
+
 const DEFAULT_CONFIG: &str = r#"# Kwick 設定ファイル
 # ウィンドウを表示するたびに再読み込みされます。
+# 主な項目は "Kwick: Settings" の設定画面からも変更できます
+# (このファイルのコメントは保持されます)。
 
 hotkey = "alt+space"
 max_results = 8
@@ -102,6 +137,12 @@ scan_start_menu = false
 # PATH 上の実行ファイル (.exe/.bat/.cmd/.com) を検索対象に含めるか。
 # true にすると CLI ツールなども起動できますが、システムの exe が大量に候補に入ります。
 scan_path = false
+
+# Chocolatey の shim フォルダ (%ChocolateyInstall%\bin、既定では
+# C:\ProgramData\chocolatey\bin) を検索対象に含めるか。
+# scan_path とは独立しているので、PATH 全体を取り込まずに choco で入れた
+# ツールだけを候補に追加できます。
+scan_chocolatey = false
 
 # よく使う Windows ツール(リモートデスクトップ、タスクマネージャー等)は常に検索対象です。
 
@@ -171,5 +212,48 @@ fn ensure_default_files() {
     let calc = plugins.join("calc.lua");
     if !calc.exists() {
         let _ = std::fs::write(&calc, CALC_PLUGIN);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_scalars_keeps_comments_and_tables() {
+        // An old config.toml: no scan_chocolatey, and an array of tables last.
+        let original = "\
+# 見出しコメント
+hotkey = \"alt+space\"
+max_results = 8
+
+# PATH を含めるか
+scan_path = false
+
+[[web_searches]]
+name = \"Google\"
+keyword = \"g\"
+url = \"https://example.com/?q={query}\"
+";
+        let mut config = Config::default();
+        config.max_results = 12;
+        config.scan_path = true;
+        config.scan_chocolatey = true;
+
+        let out = apply_scalars(original, &config).unwrap();
+
+        assert!(out.contains("# 見出しコメント"));
+        assert!(out.contains("# PATH を含めるか"));
+        assert!(out.contains("max_results = 12"));
+        assert!(out.contains("scan_path = true"));
+        // A key absent from the old file is added to the root table, i.e. before
+        // [[web_searches]] — not swallowed by it.
+        let choco = out.find("scan_chocolatey = true").expect("key added");
+        assert!(choco < out.find("[[web_searches]]").unwrap());
+        // The array of tables survives and still parses back.
+        let reparsed: Config = toml::from_str(&out).unwrap();
+        assert_eq!(reparsed.web_searches.len(), 1);
+        assert!(reparsed.scan_chocolatey);
+        assert_eq!(reparsed.max_results, 12);
     }
 }
