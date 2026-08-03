@@ -59,7 +59,8 @@ impl Item {
 pub fn config_items(config: &Config) -> Vec<Item> {
     let mut items = Vec::new();
     for c in &config.commands {
-        let subtitle = match &c.args {
+        let args = (!c.args.trim().is_empty()).then(|| c.args.clone());
+        let subtitle = match &args {
             Some(a) => format!("{} {}", c.cmd, a),
             None => c.cmd.clone(),
         };
@@ -68,11 +69,11 @@ pub fn config_items(config: &Config) -> Vec<Item> {
             subtitle,
             Action::Exec {
                 cmd: c.cmd.clone(),
-                args: c.args.clone(),
+                args,
             },
         );
-        if let Some(kw) = &c.keyword {
-            item.key = format!("{} {}", item.title, kw);
+        if !c.keyword.trim().is_empty() {
+            item.key = format!("{} {}", item.title, c.keyword);
         }
         items.push(item);
     }

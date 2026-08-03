@@ -46,21 +46,33 @@ pub struct ScanFolder {
     pub extensions: Option<Vec<String>>,
 }
 
+impl Default for ScanFolder {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            depth: default_scan_depth(),
+            extensions: None,
+        }
+    }
+}
+
 fn default_scan_depth() -> usize {
     3
 }
 
-#[derive(Deserialize, Clone)]
+/// 省略可能な項目は空文字を「未設定」として扱う(設定 UI から
+/// そのまま編集できるように Option ではなく String で持つ)。
+#[derive(Deserialize, Clone, Default)]
 pub struct CustomCommand {
     pub name: String,
     pub cmd: String,
     #[serde(default)]
-    pub args: Option<String>,
+    pub args: String,
     #[serde(default)]
-    pub keyword: Option<String>,
+    pub keyword: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Default)]
 pub struct WebSearch {
     pub name: String,
     pub keyword: String,
@@ -92,22 +104,23 @@ pub fn load() -> Config {
     }
 }
 
-/// 設定 UI で編集できるスカラー項目を config.toml に書き戻す。
+/// 設定 UI での変更を config.toml に書き戻す。
 ///
-/// toml_edit で既存の文書を書き換えるので、コメントや
-/// [[scan_folders]] / [[commands]] / [[web_searches]] はそのまま残る。
-/// 未記載のキーは追記されるため、新しい設定項目が増えても
-/// 既存の config.toml が古いままにならない。
+/// toml_edit で既存の文書を書き換えるので、キーに付いたコメントや並び順は
+/// 残る。未記載のキーは追記されるため、設定項目が増えても既存の
+/// config.toml が古いままにならない。
+/// [[scan_folders]] / [[commands]] / [[web_searches]] は UI の内容で作り直す
+/// (見出しコメントは引き継ぐが、表の内側に書かれたコメントは失われる)。
 pub fn save(config: &Config) -> Result<(), String> {
     ensure_default_files();
     let path = config_dir().join("config.toml");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
-    let updated = apply_scalars(&text, config)?;
+    let updated = apply(&text, config)?;
     std::fs::write(&path, updated).map_err(|e| format!("config.toml を保存できません: {e}"))
 }
 
-fn apply_scalars(text: &str, config: &Config) -> Result<String, String> {
-    use toml_edit::{value, DocumentMut};
+fn apply(text: &str, config: &Config) -> Result<String, String> {
+    use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Table};
 
     let mut doc: DocumentMut = text
         .parse()
@@ -120,13 +133,80 @@ fn apply_scalars(text: &str, config: &Config) -> Result<String, String> {
     doc["scan_path"] = value(config.scan_path);
     doc["scan_chocolatey"] = value(config.scan_chocolatey);
     doc["system_commands"] = value(config.system_commands);
+
+    let mut folders = ArrayOfTables::new();
+    for folder in config
+        .scan_folders
+        .iter()
+        .filter(|f| !f.path.trim().is_empty())
+    {
+        let mut table = Table::new();
+        table["path"] = value(folder.path.trim());
+        table["depth"] = value(folder.depth as i64);
+        if let Some(extensions) = &folder.extensions {
+            let mut array = Array::new();
+            for ext in extensions {
+                array.push(ext.as_str());
+            }
+            table["extensions"] = value(array);
+        }
+        folders.push(table);
+    }
+    set_tables(&mut doc, "scan_folders", folders);
+
+    let mut commands = ArrayOfTables::new();
+    for command in config.commands.iter().filter(|c| !c.name.trim().is_empty()) {
+        let mut table = Table::new();
+        table["name"] = value(command.name.trim());
+        table["cmd"] = value(command.cmd.trim());
+        for (key, text) in [("args", &command.args), ("keyword", &command.keyword)] {
+            if !text.trim().is_empty() {
+                table[key] = value(text.trim());
+            }
+        }
+        commands.push(table);
+    }
+    set_tables(&mut doc, "commands", commands);
+
+    let mut searches = ArrayOfTables::new();
+    for search in config
+        .web_searches
+        .iter()
+        .filter(|w| !w.keyword.trim().is_empty())
+    {
+        let mut table = Table::new();
+        table["name"] = value(search.name.trim());
+        table["keyword"] = value(search.keyword.trim());
+        table["url"] = value(search.url.trim());
+        searches.push(table);
+    }
+    set_tables(&mut doc, "web_searches", searches);
+
     Ok(doc.to_string())
+}
+
+/// Replace an array of tables, carrying over the comment that introduced it.
+fn set_tables(doc: &mut toml_edit::DocumentMut, key: &str, mut tables: toml_edit::ArrayOfTables) {
+    let heading = doc
+        .get(key)
+        .and_then(|item| item.as_array_of_tables())
+        .and_then(|old| old.get(0))
+        .and_then(|first| first.decor().prefix().cloned());
+    if tables.is_empty() {
+        doc.remove(key);
+        return;
+    }
+    if let (Some(heading), Some(first)) = (heading, tables.get_mut(0)) {
+        first.decor_mut().set_prefix(heading);
+    }
+    doc[key] = toml_edit::Item::ArrayOfTables(tables);
 }
 
 const DEFAULT_CONFIG: &str = r#"# Kwick 設定ファイル
 # ウィンドウを表示するたびに再読み込みされます。
-# 主な項目は "Kwick: Settings" の設定画面からも変更できます
-# (このファイルのコメントは保持されます)。
+# すべての項目は "Kwick: Settings" の設定画面からも編集できます
+# (キーに付けたコメントは保持されますが、[[...]] の表の内側に書いた
+#  コメントは設定画面から保存すると失われます)。
 
 hotkey = "alt+space"
 max_results = 8
@@ -220,7 +300,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn apply_scalars_keeps_comments_and_tables() {
+    fn apply_keeps_comments_and_rewrites_tables() {
         // An old config.toml: no scan_chocolatey, and an array of tables last.
         let original = "\
 # 見出しコメント
@@ -230,17 +310,30 @@ max_results = 8
 # PATH を含めるか
 scan_path = false
 
+# Web 検索
 [[web_searches]]
 name = \"Google\"
 keyword = \"g\"
 url = \"https://example.com/?q={query}\"
 ";
-        let mut config = Config::default();
+        let mut config: Config = toml::from_str(original).unwrap();
         config.max_results = 12;
         config.scan_path = true;
         config.scan_chocolatey = true;
+        config.web_searches.push(WebSearch {
+            name: "YouTube".into(),
+            keyword: "yt".into(),
+            url: "https://example.net/?s={query}".into(),
+        });
+        config.scan_folders.push(ScanFolder {
+            path: r"D:\Tools".into(),
+            depth: 2,
+            extensions: Some(vec!["exe".into()]),
+        });
+        // Blank rows are what an untouched "追加" leaves behind; drop them.
+        config.commands.push(CustomCommand::default());
 
-        let out = apply_scalars(original, &config).unwrap();
+        let out = apply(original, &config).unwrap();
 
         assert!(out.contains("# 見出しコメント"));
         assert!(out.contains("# PATH を含めるか"));
@@ -250,10 +343,20 @@ url = \"https://example.com/?q={query}\"
         // [[web_searches]] — not swallowed by it.
         let choco = out.find("scan_chocolatey = true").expect("key added");
         assert!(choco < out.find("[[web_searches]]").unwrap());
-        // The array of tables survives and still parses back.
+        // The comment introducing the array of tables is carried over.
+        assert!(out.contains("# Web 検索\n[[web_searches]]"));
+        assert!(!out.contains("[[commands]]"));
+
         let reparsed: Config = toml::from_str(&out).unwrap();
-        assert_eq!(reparsed.web_searches.len(), 1);
         assert!(reparsed.scan_chocolatey);
         assert_eq!(reparsed.max_results, 12);
+        assert_eq!(reparsed.web_searches.len(), 2);
+        assert_eq!(reparsed.web_searches[1].keyword, "yt");
+        assert_eq!(reparsed.scan_folders.len(), 1);
+        assert_eq!(reparsed.scan_folders[0].depth, 2);
+        assert_eq!(
+            reparsed.scan_folders[0].extensions.as_deref(),
+            Some(["exe".to_string()].as_slice())
+        );
     }
 }

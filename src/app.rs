@@ -19,6 +19,10 @@ enum View {
     Settings,
 }
 
+/// The settings view needs far more room than the palette, so it gets its own
+/// window size; `config.width`/`height` stay the size of the search palette.
+const SETTINGS_SIZE: egui::Vec2 = egui::vec2(760.0, 720.0);
+
 pub struct KwickApp {
     config: Config,
     /// Indexed items: start menu apps, PATH executables, builtins, custom commands.
@@ -36,10 +40,15 @@ pub struct KwickApp {
     view: View,
     /// Hotkey text being edited in the settings view (applied on lost focus).
     hotkey_draft: String,
+    /// Comma-separated extension lists being typed, one per scan folder.
+    ext_drafts: Vec<String>,
     /// Cached HKCU Run state so the settings checkbox doesn't hit the registry
     /// every frame.
     startup_enabled: bool,
     settings_status: Option<String>,
+    /// Edits not yet written to config.toml (see `flush_settings`).
+    settings_dirty: bool,
+    settings_rescan: bool,
 
     icons: IconCache,
     ctl: Arc<WindowCtl>,
@@ -156,6 +165,264 @@ fn size_drag(value: &mut f32) -> egui::DragValue<'_> {
     egui::DragValue::new(value).speed(4.0).range(240.0..=1600.0)
 }
 
+/// What the settings view changed while it was being built.
+///
+/// Saving is deferred until a widget is done being interacted with, so typing
+/// in a text field doesn't rewrite config.toml on every keystroke.
+#[derive(Default)]
+struct Edits {
+    /// Something changed and still has to reach config.toml.
+    dirty: bool,
+    /// Save now.
+    flush: bool,
+    /// The change affects what gets indexed.
+    rescan: bool,
+}
+
+impl Edits {
+    /// A widget that settles when you leave it: text field, drag value.
+    fn field(&mut self, response: &egui::Response, rescan: bool) {
+        if response.changed() {
+            self.dirty = true;
+            self.rescan |= rescan;
+        }
+        if response.lost_focus() || response.drag_stopped() {
+            self.flush = true;
+        }
+    }
+
+    /// A widget whose single click is the entire change: checkbox, button.
+    fn toggle(&mut self, response: &egui::Response, rescan: bool) {
+        if response.changed() {
+            self.mark(rescan);
+        }
+    }
+
+    fn mark(&mut self, rescan: bool) {
+        self.dirty = true;
+        self.flush = true;
+        self.rescan |= rescan;
+    }
+}
+
+/// Header for an editable list, with the button that appends a row.
+fn list_section(ui: &mut egui::Ui, title: &str, description: &str, add: &str) -> bool {
+    section(ui, title);
+    note(ui, description);
+    ui.add_space(2.0);
+    let mut added = false;
+    ui.horizontal(|ui| {
+        added = ui.button(add).clicked();
+    });
+    added
+}
+
+/// One row of an editable list; returns true when its 削除 button was pressed.
+fn list_row(
+    ui: &mut egui::Ui,
+    index: usize,
+    contents: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let mut remove = false;
+    ui.push_id(index, |ui| {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| contents(ui));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    remove = ui.button("削除").clicked();
+                });
+            });
+        });
+    });
+    remove
+}
+
+fn labeled(ui: &mut egui::Ui, label: &str, width: f32, text: &mut String, hint: &str) -> egui::Response {
+    let mut response = None;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        response = Some(ui.add(
+            egui::TextEdit::singleline(text)
+                .desired_width(width)
+                .hint_text(hint),
+        ));
+    });
+    response.expect("horizontal ran")
+}
+
+fn scan_folders_ui(
+    ui: &mut egui::Ui,
+    config: &mut Config,
+    ext_drafts: &mut Vec<String>,
+    edits: &mut Edits,
+) {
+    if list_section(
+        ui,
+        "スキャンフォルダ",
+        "指定したフォルダの中身を検索対象に追加します",
+        "+ フォルダを追加",
+    ) {
+        config.scan_folders.push(config::ScanFolder::default());
+        ext_drafts.push(String::new());
+        edits.mark(true);
+    }
+    // The drafts hold the comma-separated text being typed; reparsing the real
+    // Vec<String> on every frame would fight with the cursor.
+    ext_drafts.resize(config.scan_folders.len(), String::new());
+
+    let mut remove = None;
+    for (i, folder) in config.scan_folders.iter_mut().enumerate() {
+        let draft = &mut ext_drafts[i];
+        if list_row(ui, i, |ui| {
+            edits.field(&labeled(ui, "パス", 300.0, &mut folder.path, r"D:\Tools"), true);
+            ui.horizontal(|ui| {
+                ui.label("階層");
+                edits.field(
+                    &ui.add(egui::DragValue::new(&mut folder.depth).range(1..=8)),
+                    true,
+                );
+                ui.add_space(8.0);
+                ui.label("拡張子");
+                let response = ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .desired_width(190.0)
+                        .hint_text("exe, lnk, bat, cmd, url"),
+                );
+                if response.lost_focus() {
+                    let parsed: Vec<String> = draft
+                        .split(',')
+                        .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+                        .filter(|e| !e.is_empty())
+                        .collect();
+                    folder.extensions = (!parsed.is_empty()).then_some(parsed);
+                    *draft = folder
+                        .extensions
+                        .as_ref()
+                        .map(|e| e.join(", "))
+                        .unwrap_or_default();
+                }
+                edits.field(&response, true);
+            });
+        }) {
+            remove = Some(i);
+        }
+    }
+    if let Some(i) = remove {
+        config.scan_folders.remove(i);
+        ext_drafts.remove(i);
+        edits.mark(true);
+    }
+}
+
+fn commands_ui(ui: &mut egui::Ui, config: &mut Config, edits: &mut Edits) {
+    if list_section(
+        ui,
+        "カスタムコマンド",
+        "任意のコマンドを候補に追加します (キーワードでも検索できます)",
+        "+ コマンドを追加",
+    ) {
+        config.commands.push(config::CustomCommand::default());
+        edits.mark(false);
+    }
+
+    let mut remove = None;
+    for (i, command) in config.commands.iter_mut().enumerate() {
+        if list_row(ui, i, |ui| {
+            edits.field(
+                &labeled(ui, "名前", 240.0, &mut command.name, "Shutdown PC"),
+                false,
+            );
+            edits.field(
+                &labeled(ui, "コマンド", 240.0, &mut command.cmd, "shutdown"),
+                false,
+            );
+            ui.horizontal(|ui| {
+                ui.label("引数");
+                edits.field(
+                    &ui.add(
+                        egui::TextEdit::singleline(&mut command.args)
+                            .desired_width(150.0)
+                            .hint_text("/s /t 0"),
+                    ),
+                    false,
+                );
+                ui.add_space(8.0);
+                ui.label("キーワード");
+                edits.field(
+                    &ui.add(
+                        egui::TextEdit::singleline(&mut command.keyword)
+                            .desired_width(80.0)
+                            .hint_text("sd"),
+                    ),
+                    false,
+                );
+            });
+        }) {
+            remove = Some(i);
+        }
+    }
+    if let Some(i) = remove {
+        config.commands.remove(i);
+        edits.mark(false);
+    }
+}
+
+fn web_searches_ui(ui: &mut egui::Ui, config: &mut Config, edits: &mut Edits) {
+    if list_section(
+        ui,
+        "Web 検索",
+        "「キーワード + スペース + 検索語」で検索します。URL の {query} が検索語に置き換わります",
+        "+ 検索を追加",
+    ) {
+        config.web_searches.push(config::WebSearch::default());
+        edits.mark(false);
+    }
+
+    let mut remove = None;
+    for (i, search) in config.web_searches.iter_mut().enumerate() {
+        if list_row(ui, i, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("名前");
+                edits.field(
+                    &ui.add(
+                        egui::TextEdit::singleline(&mut search.name)
+                            .desired_width(150.0)
+                            .hint_text("Google"),
+                    ),
+                    false,
+                );
+                ui.add_space(8.0);
+                ui.label("キーワード");
+                edits.field(
+                    &ui.add(
+                        egui::TextEdit::singleline(&mut search.keyword)
+                            .desired_width(60.0)
+                            .hint_text("g"),
+                    ),
+                    false,
+                );
+            });
+            edits.field(
+                &labeled(
+                    ui,
+                    "URL",
+                    330.0,
+                    &mut search.url,
+                    "https://www.google.com/search?q={query}",
+                ),
+                false,
+            );
+        }) {
+            remove = Some(i);
+        }
+    }
+    if let Some(i) = remove {
+        config.web_searches.remove(i);
+        edits.mark(false);
+    }
+}
+
 fn win32_hwnd(cc: &eframe::CreationContext<'_>) -> isize {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     match cc.window_handle().map(|h| h.as_raw()) {
@@ -234,8 +501,11 @@ impl KwickApp {
             selected: 0,
             needs_search: start_visible,
             view: View::Search,
+            ext_drafts: Vec::new(),
             startup_enabled: crate::startup::is_enabled(),
             settings_status: None,
+            settings_dirty: false,
+            settings_rescan: false,
             icons: IconCache::new(cc.egui_ctx.clone()),
             ctl,
             last_visible: start_visible,
@@ -260,9 +530,16 @@ impl KwickApp {
         self.view = View::Search;
         self.hotkey_draft = self.config.hotkey.clone();
         self.settings_status = None;
+        self.resize(ctx, egui::vec2(self.config.width, self.config.height));
+    }
+
+    fn resize(&self, ctx: &egui::Context, size: egui::Vec2) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
     }
 
     fn hide_window(&mut self) {
+        // Don't lose a settings edit that was still being typed.
+        self.flush_settings();
         self.ctl.hide();
         self.last_visible = false;
     }
@@ -285,43 +562,65 @@ impl KwickApp {
         {
             self.rescan_index();
         } else {
-            self.indexed
-                .truncate(self.indexed.len() - self.config_item_count);
-            let config_items = providers::config_items(&self.config);
-            self.config_item_count = config_items.len();
-            self.indexed.extend(config_items);
+            self.refresh_config_items();
         }
         self.lua = LuaHost::new(&config::plugin_dir(), ctx.clone());
     }
 
     fn rescan_index(&mut self) {
         self.indexed = providers::scan_indexed(&self.config);
+        self.config_item_count = 0;
+        self.refresh_config_items();
+    }
+
+    /// Rebuild only the cheap part of the index: the items from config.toml.
+    fn refresh_config_items(&mut self) {
+        self.indexed
+            .truncate(self.indexed.len() - self.config_item_count);
         let config_items = providers::config_items(&self.config);
         self.config_item_count = config_items.len();
         self.indexed.extend(config_items);
     }
 
-    fn open_settings(&mut self) {
+    fn open_settings(&mut self, ctx: &egui::Context) {
         self.view = View::Settings;
+        self.resize(ctx, SETTINGS_SIZE);
         self.hotkey_draft = self.config.hotkey.clone();
         self.startup_enabled = crate::startup::is_enabled();
         self.settings_status = None;
+        self.ext_drafts = self
+            .config
+            .scan_folders
+            .iter()
+            .map(|f| f.extensions.as_ref().map(|e| e.join(", ")).unwrap_or_default())
+            .collect();
     }
 
-    fn close_settings(&mut self) {
+    fn close_settings(&mut self, ctx: &egui::Context) {
+        self.flush_settings();
         self.view = View::Search;
         self.query.clear();
         self.needs_search = true;
+        self.resize(ctx, egui::vec2(self.config.width, self.config.height));
     }
 
-    /// Persist the scalar settings; `rescan` when a scan source was toggled.
-    fn save_settings(&mut self, rescan: bool) {
+    /// Write pending settings changes to config.toml and refresh the index.
+    ///
+    /// Edits are batched rather than saved on every keystroke: a text field is
+    /// only written out once it is left.
+    fn flush_settings(&mut self) {
+        if !self.settings_dirty {
+            return;
+        }
+        self.settings_dirty = false;
         match config::save(&self.config) {
             Ok(()) => self.settings_status = None,
             Err(e) => self.settings_status = Some(e),
         }
-        if rescan {
+        if std::mem::take(&mut self.settings_rescan) {
             self.rescan_index();
+        } else {
+            self.refresh_config_items();
         }
     }
 
@@ -339,15 +638,13 @@ impl KwickApp {
     }
 
     fn settings_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        let mut changed = false;
-        let mut rescan = false;
+        let mut edits = Edits::default();
+        let mut close = false;
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("設定").heading());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("閉じる (Esc)").clicked() {
-                    self.view = View::Search;
-                }
+                close = ui.button("閉じる (Esc)").clicked();
                 if ui.button("config.toml を開く").clicked() {
                     let path = config::config_dir().join("config.toml");
                     launch::open_in_editor(&path.display().to_string());
@@ -382,40 +679,42 @@ impl KwickApp {
                         &mut self.config.system_commands,
                     ),
                 ] {
-                    if ui.checkbox(flag, label).changed() {
-                        changed = true;
-                        rescan = true;
-                    }
+                    edits.toggle(&ui.checkbox(flag, label), true);
                     hint(ui, hint_text);
                 }
 
+                {
+                    let Self {
+                        config, ext_drafts, ..
+                    } = &mut *self;
+                    scan_folders_ui(ui, config, ext_drafts, &mut edits);
+                    commands_ui(ui, config, &mut edits);
+                    web_searches_ui(ui, config, &mut edits);
+                }
+
                 section(ui, "表示");
-                let mut size_changed = false;
                 egui::Grid::new("kwick-settings-display")
                     .num_columns(2)
                     .spacing([12.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("最大表示件数");
-                        changed |= ui
-                            .add(egui::DragValue::new(&mut self.config.max_results).range(1..=30))
-                            .changed();
+                        edits.field(
+                            &ui.add(egui::DragValue::new(&mut self.config.max_results).range(1..=30)),
+                            false,
+                        );
                         ui.end_row();
 
-                        ui.label("ウィンドウサイズ");
+                        ui.label("検索窓のサイズ");
                         ui.horizontal(|ui| {
-                            size_changed |= ui.add(size_drag(&mut self.config.width)).changed();
+                            let w = ui.add(size_drag(&mut self.config.width));
                             ui.label("×");
-                            size_changed |= ui.add(size_drag(&mut self.config.height)).changed();
+                            let h = ui.add(size_drag(&mut self.config.height));
+                            edits.field(&w, false);
+                            edits.field(&h, false);
+                            note(ui, "設定画面を閉じると反映されます");
                         });
                         ui.end_row();
                     });
-                if size_changed {
-                    changed = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-                        self.config.width,
-                        self.config.height,
-                    )));
-                }
 
                 section(ui, "起動");
                 egui::Grid::new("kwick-settings-startup")
@@ -436,7 +735,7 @@ impl KwickApp {
                                 self.config.hotkey = spec.clone();
                                 self.hotkey_draft = spec.clone();
                                 self.apply_hotkey(&spec);
-                                changed = true;
+                                edits.mark(false);
                             }
                         }
                         ui.end_row();
@@ -455,23 +754,24 @@ impl KwickApp {
                     self.settings_status = Some("スタートアップ登録に失敗しました".into());
                 }
 
-                ui.add_space(10.0);
-                ui.separator();
-                note(
-                    ui,
-                    "スキャンフォルダ・カスタムコマンド・Web 検索は config.toml で編集します",
-                );
                 if let Some(status) = &self.settings_status {
+                    ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new(status)
                             .color(ui.visuals().error_fg_color)
                             .size(11.0),
                     );
                 }
+                ui.add_space(8.0);
             });
 
-        if changed {
-            self.save_settings(rescan);
+        self.settings_dirty |= edits.dirty;
+        self.settings_rescan |= edits.rescan;
+        if edits.flush {
+            self.flush_settings();
+        }
+        if close {
+            self.close_settings(ctx);
         }
     }
 
@@ -550,7 +850,7 @@ impl KwickApp {
             }
             Action::OpenSettings => {
                 self.history.bump(&title);
-                self.open_settings();
+                self.open_settings(ctx);
                 return;
             }
             _ => {}
@@ -610,7 +910,7 @@ impl eframe::App for KwickApp {
         // Settings view: only Escape is claimed, so the widgets keep the rest.
         if self.view == View::Settings {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                self.close_settings();
+                self.close_settings(ctx);
             } else {
                 egui::CentralPanel::default().show(ctx, |ui| self.settings_ui(ctx, ui));
                 return;
