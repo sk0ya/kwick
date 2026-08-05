@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod folders;
 pub mod pathbin;
+pub mod shellfolders;
 pub mod systools;
 
 use crate::config::Config;
@@ -121,8 +122,8 @@ fn extend_deduped(items: &mut Vec<Item>, extra: Vec<Item>) {
     );
 }
 
-/// Heavy scan: start menu apps + system tools + custom folders + Chocolatey shims
-/// + PATH executables + builtins.
+/// Heavy scan: start menu apps + system tools + 主要なフォルダ + custom folders
+/// + Chocolatey shims + PATH executables + builtins.
 pub fn scan_indexed(config: &Config) -> Vec<Item> {
     let tools = systools::scan();
     let mut items: Vec<Item> = Vec::new();
@@ -140,6 +141,9 @@ pub fn scan_indexed(config: &Config) -> Vec<Item> {
     items.extend(tools);
     if config.system_commands {
         items.extend(systools::power_items());
+    }
+    if config.special_folders {
+        items.extend(shellfolders::scan());
     }
     items.extend(folders::scan(&config.scan_folders));
     // Chocolatey shims come first so they survive the dedupe against raw PATH exes.

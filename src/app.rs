@@ -550,6 +550,7 @@ impl KwickApp {
             self.config.scan_start_menu,
             self.config.scan_path,
             self.config.scan_chocolatey,
+            self.config.special_folders,
             self.config.scan_folders.clone(),
         );
         self.config = config::load();
@@ -557,6 +558,7 @@ impl KwickApp {
             self.config.scan_start_menu,
             self.config.scan_path,
             self.config.scan_chocolatey,
+            self.config.special_folders,
             self.config.scan_folders.clone(),
         ) != scan_before
         {
@@ -677,6 +679,11 @@ impl KwickApp {
                         "電源系コマンド",
                         "シャットダウン、再起動、スリープ、ロックなど",
                         &mut self.config.system_commands,
+                    ),
+                    (
+                        "主要なフォルダ",
+                        "ダウンロード、デスクトップ、AppData、Temp、Program Files など",
+                        &mut self.config.special_folders,
                     ),
                 ] {
                     edits.toggle(&ui.checkbox(flag, label), true);

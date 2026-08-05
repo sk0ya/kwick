@@ -12,6 +12,7 @@ pub struct Config {
     pub scan_path: bool,
     pub scan_chocolatey: bool,
     pub system_commands: bool,
+    pub special_folders: bool,
     pub scan_folders: Vec<ScanFolder>,
     pub commands: Vec<CustomCommand>,
     pub web_searches: Vec<WebSearch>,
@@ -28,6 +29,7 @@ impl Default for Config {
             scan_path: false,
             scan_chocolatey: false,
             system_commands: true,
+            special_folders: true,
             scan_folders: Vec::new(),
             commands: Vec::new(),
             web_searches: Vec::new(),
@@ -133,6 +135,7 @@ fn apply(text: &str, config: &Config) -> Result<String, String> {
     doc["scan_path"] = value(config.scan_path);
     doc["scan_chocolatey"] = value(config.scan_chocolatey);
     doc["system_commands"] = value(config.system_commands);
+    doc["special_folders"] = value(config.special_folders);
 
     let mut folders = ArrayOfTables::new();
     for folder in config
@@ -229,6 +232,10 @@ scan_chocolatey = false
 # 電源系コマンド(シャットダウン、再起動、スリープ、休止状態、サインアウト、ロック)を
 # 検索対象に含めるか。
 system_commands = true
+
+# 主要なフォルダ(ダウンロード、デスクトップ、AppData、Temp、Program Files など)を
+# 検索対象に含めるか。false にすると候補から消えます。
+special_folders = true
 
 # --- スキャンフォルダ(任意のフォルダを検索対象に追加) ---
 # path 直下から depth 階層まで走査し、extensions の拡張子を候補に追加します。
