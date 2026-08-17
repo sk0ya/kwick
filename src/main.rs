@@ -1,4 +1,7 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Kwick is a tray/GUI application. Keep the console subsystem disabled in
+// every profile so registering a debug build for Windows startup cannot open
+// a terminal window at logon.
+#![windows_subsystem = "windows"]
 
 use eframe::egui;
 
