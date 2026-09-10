@@ -54,6 +54,8 @@ pub struct KwickApp {
     ctl: Arc<WindowCtl>,
     /// Visibility as of the previous frame, to detect "just shown".
     last_visible: bool,
+    /// True until the first frame has been through `update`.
+    first_frame: bool,
     history: History,
     had_focus: bool,
     hotkey_notice: Option<String>,
@@ -509,6 +511,7 @@ impl KwickApp {
             icons: IconCache::new(cc.egui_ctx.clone()),
             ctl,
             last_visible: start_visible,
+            first_frame: true,
             history: History::load(),
             had_focus: false,
             hotkey_notice,
@@ -902,8 +905,17 @@ impl eframe::App for KwickApp {
         }
         self.last_visible = visible;
         if !visible {
+            // eframe shows the window itself right after the first frame is
+            // painted, whatever `with_visible` asked for, so a `--hidden`
+            // start would flash up an empty window and leave it there.
+            // Paint one more frame and put it back where it belongs.
+            if std::mem::take(&mut self.first_frame) {
+                ctx.request_repaint();
+            }
+            self.ctl.enforce_hidden();
             return;
         }
+        self.first_frame = false;
 
         // Hide when the window loses focus (after it first gained it).
         let focused = ctx.input(|i| i.focused);

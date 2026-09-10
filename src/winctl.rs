@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    SetForegroundWindow, ShowWindow, SW_HIDE, SW_SHOW,
+    IsWindowVisible, SetForegroundWindow, ShowWindow, SW_HIDE, SW_SHOW,
 };
 
 /// Shows/hides the launcher window via Win32 directly, bypassing egui.
@@ -51,6 +51,25 @@ impl WindowCtl {
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
         self.visible.store(false, Ordering::SeqCst);
+    }
+
+    /// Re-hide the window if Windows is showing it while we consider it hidden.
+    ///
+    /// eframe always creates the window hidden and then calls
+    /// `set_visible(true)` itself once the first frame has been painted,
+    /// ignoring `ViewportBuilder::with_visible(false)`. Without this, a
+    /// `--hidden` start would leave an empty (black) always-on-top window
+    /// on screen that never repaints.
+    pub fn enforce_hidden(&self) {
+        if self.is_visible() {
+            return;
+        }
+        let Some(hwnd) = self.hwnd() else { return };
+        unsafe {
+            if IsWindowVisible(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
     }
 
     pub fn toggle(&self) {
