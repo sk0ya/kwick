@@ -10,8 +10,11 @@ use crate::winctl::WindowCtl;
 use eframe::egui;
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 #[derive(PartialEq)]
 enum View {
@@ -50,6 +53,15 @@ pub struct KwickApp {
     settings_dirty: bool,
     settings_rescan: bool,
 
+    /// A scan runs away from the egui thread. The old index remains usable
+    /// until the worker returns a complete replacement.
+    scan_rx: Option<Receiver<Vec<Item>>>,
+    scan_again: bool,
+    /// Config/plugin files are hot-reloaded only when their stamps change.
+    reload_stamp: ReloadStamp,
+    egui_ctx: egui::Context,
+    window_size: Option<egui::Vec2>,
+
     icons: IconCache,
     ctl: Arc<WindowCtl>,
     /// Visibility as of the previous frame, to detect "just shown".
@@ -70,6 +82,60 @@ pub struct KwickApp {
 struct Binding {
     hotkey: HotKey,
     spec: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ReloadStamp {
+    config: FileStamp,
+    plugins: Vec<(String, FileStamp)>,
+}
+
+fn file_stamp(path: &Path) -> FileStamp {
+    let metadata = std::fs::metadata(path).ok();
+    FileStamp {
+        modified: metadata.as_ref().and_then(|m| m.modified().ok()),
+        len: metadata.map(|m| m.len()).unwrap_or(0),
+    }
+}
+
+fn reload_stamp() -> ReloadStamp {
+    let config_path = config::config_dir().join("config.toml");
+    let mut plugins = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(config::plugin_dir()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("lua") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            plugins.push((name, file_stamp(&path)));
+        }
+    }
+    plugins.sort_by(|a, b| a.0.cmp(&b.0));
+    ReloadStamp {
+        config: file_stamp(&config_path),
+        plugins,
+    }
+}
+
+fn scan_key(config: &Config) -> (bool, bool, bool, bool, bool, Vec<config::ScanFolder>) {
+    (
+        config.scan_start_menu,
+        config.scan_path,
+        config.scan_chocolatey,
+        config.system_commands,
+        config.special_folders,
+        config.scan_folders.clone(),
+    )
 }
 
 /// Try the configured hotkey, then fallbacks (the configured one is often
@@ -220,11 +286,7 @@ fn list_section(ui: &mut egui::Ui, title: &str, description: &str, add: &str) ->
 }
 
 /// One row of an editable list; returns true when its 削除 button was pressed.
-fn list_row(
-    ui: &mut egui::Ui,
-    index: usize,
-    contents: impl FnOnce(&mut egui::Ui),
-) -> bool {
+fn list_row(ui: &mut egui::Ui, index: usize, contents: impl FnOnce(&mut egui::Ui)) -> bool {
     let mut remove = false;
     ui.push_id(index, |ui| {
         egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -240,15 +302,23 @@ fn list_row(
     remove
 }
 
-fn labeled(ui: &mut egui::Ui, label: &str, width: f32, text: &mut String, hint: &str) -> egui::Response {
+fn labeled(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+    text: &mut String,
+    hint: &str,
+) -> egui::Response {
     let mut response = None;
     ui.horizontal(|ui| {
         ui.label(label);
-        response = Some(ui.add(
-            egui::TextEdit::singleline(text)
-                .desired_width(width)
-                .hint_text(hint),
-        ));
+        response = Some(
+            ui.add(
+                egui::TextEdit::singleline(text)
+                    .desired_width(width)
+                    .hint_text(hint),
+            ),
+        );
     });
     response.expect("horizontal ran")
 }
@@ -277,7 +347,10 @@ fn scan_folders_ui(
     for (i, folder) in config.scan_folders.iter_mut().enumerate() {
         let draft = &mut ext_drafts[i];
         if list_row(ui, i, |ui| {
-            edits.field(&labeled(ui, "パス", 300.0, &mut folder.path, r"D:\Tools"), true);
+            edits.field(
+                &labeled(ui, "パス", 300.0, &mut folder.path, r"D:\Tools"),
+                true,
+            );
             ui.horizontal(|ui| {
                 ui.label("階層");
                 edits.field(
@@ -490,6 +563,7 @@ impl KwickApp {
         indexed.extend(config_items);
 
         let lua = LuaHost::new(&config::plugin_dir(), cc.egui_ctx.clone());
+        let reload_stamp = reload_stamp();
 
         Self {
             hotkey_draft: config.hotkey.clone(),
@@ -508,6 +582,11 @@ impl KwickApp {
             settings_status: None,
             settings_dirty: false,
             settings_rescan: false,
+            scan_rx: None,
+            scan_again: false,
+            reload_stamp,
+            egui_ctx: cc.egui_ctx.clone(),
+            window_size: None,
             icons: IconCache::new(cc.egui_ctx.clone()),
             ctl,
             last_visible: start_visible,
@@ -524,7 +603,10 @@ impl KwickApp {
 
     /// Reset state when the window (re)appears.
     fn on_shown(&mut self, ctx: &egui::Context) {
-        self.reload_config(ctx);
+        let stamp = reload_stamp();
+        if self.reload_stamp != stamp {
+            self.reload_config(ctx, stamp);
+        }
         self.query.clear();
         self.results.clear();
         self.selected = 0;
@@ -536,7 +618,11 @@ impl KwickApp {
         self.resize(ctx, egui::vec2(self.config.width, self.config.height));
     }
 
-    fn resize(&self, ctx: &egui::Context, size: egui::Vec2) {
+    fn resize(&mut self, ctx: &egui::Context, size: egui::Vec2) {
+        if self.window_size == Some(size) {
+            return;
+        }
+        self.window_size = Some(size);
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
     }
 
@@ -547,35 +633,59 @@ impl KwickApp {
         self.last_visible = false;
     }
 
-    /// Cheap reload on every show: config file, custom commands, Lua plugins.
-    fn reload_config(&mut self, ctx: &egui::Context) {
-        let scan_before = (
-            self.config.scan_start_menu,
-            self.config.scan_path,
-            self.config.scan_chocolatey,
-            self.config.special_folders,
-            self.config.scan_folders.clone(),
-        );
+    /// Reload config/plugins only after their files changed.
+    fn reload_config(&mut self, ctx: &egui::Context, stamp: ReloadStamp) {
+        let scan_before = scan_key(&self.config);
         self.config = config::load();
-        if (
-            self.config.scan_start_menu,
-            self.config.scan_path,
-            self.config.scan_chocolatey,
-            self.config.special_folders,
-            self.config.scan_folders.clone(),
-        ) != scan_before
-        {
-            self.rescan_index();
+        if scan_key(&self.config) != scan_before {
+            self.request_rescan();
         } else {
             self.refresh_config_items();
         }
         self.lua = LuaHost::new(&config::plugin_dir(), ctx.clone());
+        self.reload_stamp = stamp;
     }
 
-    fn rescan_index(&mut self) {
-        self.indexed = providers::scan_indexed(&self.config);
-        self.config_item_count = 0;
-        self.refresh_config_items();
+    /// Start one background scan. If a second request arrives while it is
+    /// running, the latest config is scanned again after the first result.
+    fn request_rescan(&mut self) {
+        if self.scan_rx.is_some() {
+            self.scan_again = true;
+            return;
+        }
+        let config = self.config.clone();
+        let ctx = self.egui_ctx.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let indexed = providers::scan_indexed(&config);
+            let _ = tx.send(indexed);
+            ctx.request_repaint();
+        });
+        self.scan_rx = Some(rx);
+    }
+
+    fn poll_rescan(&mut self) {
+        let result = match self.scan_rx.as_ref() {
+            Some(rx) => match rx.try_recv() {
+                Ok(indexed) => Some(Ok(indexed)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err(())),
+            },
+            None => return,
+        };
+        let Some(result) = result else { return };
+
+        self.scan_rx = None;
+        if let Ok(indexed) = result {
+            self.indexed = indexed;
+            self.config_item_count = 0;
+            self.refresh_config_items();
+            self.needs_search = true;
+        }
+        if self.scan_again {
+            self.scan_again = false;
+            self.request_rescan();
+        }
     }
 
     /// Rebuild only the cheap part of the index: the items from config.toml.
@@ -597,7 +707,12 @@ impl KwickApp {
             .config
             .scan_folders
             .iter()
-            .map(|f| f.extensions.as_ref().map(|e| e.join(", ")).unwrap_or_default())
+            .map(|f| {
+                f.extensions
+                    .as_ref()
+                    .map(|e| e.join(", "))
+                    .unwrap_or_default()
+            })
             .collect();
     }
 
@@ -619,11 +734,14 @@ impl KwickApp {
         }
         self.settings_dirty = false;
         match config::save(&self.config) {
-            Ok(()) => self.settings_status = None,
+            Ok(()) => {
+                self.settings_status = None;
+                self.reload_stamp = reload_stamp();
+            }
             Err(e) => self.settings_status = Some(e),
         }
         if std::mem::take(&mut self.settings_rescan) {
-            self.rescan_index();
+            self.request_rescan();
         } else {
             self.refresh_config_items();
         }
@@ -709,7 +827,9 @@ impl KwickApp {
                     .show(ui, |ui| {
                         ui.label("最大表示件数");
                         edits.field(
-                            &ui.add(egui::DragValue::new(&mut self.config.max_results).range(1..=30)),
+                            &ui.add(
+                                egui::DragValue::new(&mut self.config.max_results).range(1..=30),
+                            ),
                             false,
                         );
                         ui.end_row();
@@ -733,8 +853,7 @@ impl KwickApp {
                     .show(ui, |ui| {
                         ui.label("ホットキー");
                         let response = ui.add(
-                            egui::TextEdit::singleline(&mut self.hotkey_draft)
-                                .desired_width(160.0),
+                            egui::TextEdit::singleline(&mut self.hotkey_draft).desired_width(160.0),
                         );
                         // Applied when the field is left, by Enter or by clicking away.
                         if response.lost_focus() {
@@ -830,14 +949,14 @@ impl KwickApp {
         self.results.append(&mut lua_items);
 
         // Fuzzy-matched indexed items, boosted by launch history.
-        let remaining = self.config.max_results.saturating_sub(self.results.len().min(2));
+        let remaining = self
+            .config
+            .max_results
+            .saturating_sub(self.results.len().min(2));
         let history = &self.history;
-        for idx in self
-            .ranker
-            .rank(&self.indexed, &query, remaining, |it| {
-                history.bonus(&it.title) + it.rank_boost
-            })
-        {
+        for idx in self.ranker.rank(&self.indexed, &query, remaining, |it| {
+            history.bonus(&it.title) + it.rank_boost
+        }) {
             self.results.push(self.indexed[idx].clone());
         }
     }
@@ -850,7 +969,7 @@ impl KwickApp {
         let title = item.title.clone();
         match action {
             Action::Reload => {
-                self.rescan_index();
+                self.request_rescan();
                 self.needs_search = true;
                 return;
             }
@@ -892,8 +1011,9 @@ impl KwickApp {
 
 impl eframe::App for KwickApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_rescan();
         if self.tray_flags.reload.swap(false, Ordering::SeqCst) {
-            self.rescan_index();
+            self.request_rescan();
             self.needs_search = true;
         }
 
@@ -1021,15 +1141,12 @@ impl eframe::App for KwickApp {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
                                     let icon_size = egui::vec2(28.0, 28.0);
-                                    let texture = item
-                                        .icon_path
-                                        .as_deref()
-                                        .and_then(|p| icons.get(p));
+                                    let texture =
+                                        item.icon_path.as_deref().and_then(|p| icons.get(p));
                                     match texture {
                                         Some(tex) => {
                                             ui.add(
-                                                egui::Image::new(&tex)
-                                                    .fit_to_exact_size(icon_size),
+                                                egui::Image::new(&tex).fit_to_exact_size(icon_size),
                                             );
                                         }
                                         None => fallback_icon(ui, &item.title, icon_size),
@@ -1037,14 +1154,10 @@ impl eframe::App for KwickApp {
                                     ui.vertical(|ui| {
                                         ui.spacing_mut().item_spacing.y = 1.0;
                                         ui.label(
-                                            egui::RichText::new(&item.title)
-                                                .strong()
-                                                .size(16.0),
+                                            egui::RichText::new(&item.title).strong().size(16.0),
                                         );
                                         ui.label(
-                                            egui::RichText::new(&item.subtitle)
-                                                .weak()
-                                                .size(11.0),
+                                            egui::RichText::new(&item.subtitle).weak().size(11.0),
                                         );
                                     });
                                 });
