@@ -9,6 +9,7 @@ mod app;
 mod config;
 mod fonts;
 mod history;
+mod hotkey;
 mod icons;
 mod launch;
 mod lua_host;

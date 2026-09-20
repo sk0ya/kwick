@@ -1,5 +1,6 @@
 use crate::config::{self, Config};
 use crate::history::History;
+use crate::hotkey::HotkeyInput;
 use crate::icons::IconCache;
 use crate::launch::{self, shell_open};
 use crate::lua_host::LuaHost;
@@ -76,6 +77,7 @@ pub struct KwickApp {
     tray_flags: Arc<TrayFlags>,
     _tray: Option<tray_icon::TrayIcon>,
     hotkey_manager: GlobalHotKeyManager,
+    hotkey_input: HotkeyInput,
 }
 
 /// A hotkey that is registered with the OS right now.
@@ -534,19 +536,22 @@ impl KwickApp {
         }
 
         let ctl = Arc::new(WindowCtl::new(win32_hwnd(cc), start_visible));
+        let hotkey_input = HotkeyInput::new(
+            cc.egui_ctx.clone(),
+            ctl.clone(),
+            active_hotkey.as_ref().map(|binding| binding.hotkey),
+        );
 
         // Toggle straight from the hotkey thread: while the window is hidden
         // the event loop gets no paint events, so this cannot go through the
         // app's update().
         {
-            let ctl = ctl.clone();
-            let ctx = cc.egui_ctx.clone();
+            let hotkey_input = hotkey_input.clone();
             std::thread::spawn(move || {
                 let receiver = GlobalHotKeyEvent::receiver();
                 while let Ok(event) = receiver.recv() {
                     if event.state == HotKeyState::Pressed {
-                        ctl.toggle();
-                        ctx.request_repaint();
+                        hotkey_input.on_registered_event(event.id);
                     }
                 }
             });
@@ -599,6 +604,7 @@ impl KwickApp {
             tray_flags,
             _tray: tray,
             hotkey_manager,
+            hotkey_input,
         }
     }
 
@@ -757,6 +763,8 @@ impl KwickApp {
             let _ = self.hotkey_manager.unregister(old.hotkey);
         }
         let (binding, notice) = register_hotkey(&self.hotkey_manager, spec);
+        self.hotkey_input
+            .set_hotkey(binding.as_ref().map(|binding| binding.hotkey));
         self.active_hotkey = binding;
         self.hotkey_notice = notice;
     }
