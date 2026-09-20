@@ -21,7 +21,7 @@ cargo build --release
 
 ## 使い方
 
-- 文字を入力するとスタートメニューのアプリ・PATH上の実行ファイルをファジー検索
+- 文字を入力すると登録済みアプリ・スタートメニューのアプリ・PATH上の実行ファイルをファジー検索
 - `↑` `↓` で選択、`Enter` で実行、`Esc` で閉じる
 - 空欄のときは使用頻度の高いアイテムを表示(起動回数は `history.toml` に記録され、
   検索順位のブーストにも使われる)
@@ -56,6 +56,10 @@ name = "Google"
 keyword = "g"
 url = "https://www.google.com/search?q={query}"
 ```
+
+`scan_registered_apps = true` (既定) にすると、Windows の App Paths に登録された
+起動可能なアプリも検索対象になります。PATH 全体を検索するより候補が少なく、GUI アプリを
+増やしたい場合に向いています。
 
 > ⚠ `alt+space` はPowerToys Runなど他のランチャーと競合しがち。設定したキーが
 > 使えない場合は `ctrl+alt+space` → `ctrl+shift+space` → `ctrl+alt+k` の順に
@@ -110,6 +114,7 @@ src/
   fonts.rs       日本語フォントのフォールバック読み込み
   providers/
     apps.rs      スタートメニュー(.lnk/.url)スキャン
+    registered.rs Windows の App Paths に登録されたアプリのスキャン
     pathbin.rs   PATH上の実行ファイルスキャン
     mod.rs       Item/Action定義・設定由来アイテム・ビルトイン
 ```

@@ -127,9 +127,10 @@ fn reload_stamp() -> ReloadStamp {
     }
 }
 
-fn scan_key(config: &Config) -> (bool, bool, bool, bool, bool, Vec<config::ScanFolder>) {
+fn scan_key(config: &Config) -> (bool, bool, bool, bool, bool, bool, Vec<config::ScanFolder>) {
     (
         config.scan_start_menu,
+        config.scan_registered_apps,
         config.scan_path,
         config.scan_chocolatey,
         config.system_commands,
@@ -785,6 +786,11 @@ impl KwickApp {
                         "スタートメニューのアプリ",
                         "インストール済みアプリのショートカット",
                         &mut self.config.scan_start_menu,
+                    ),
+                    (
+                        "登録済みアプリ (App Paths)",
+                        "Windows に起動用として登録された GUI アプリ",
+                        &mut self.config.scan_registered_apps,
                     ),
                     (
                         "PATH 上の実行ファイル",

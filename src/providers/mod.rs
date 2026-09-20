@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod folders;
 pub mod pathbin;
+pub mod registered;
 pub mod shellfolders;
 pub mod systools;
 
@@ -113,17 +114,31 @@ pub fn builtin_items() -> Vec<Item> {
 /// Append `extra`, skipping entries whose name is already covered by `items`
 /// (e.g. a Start Menu app or a Chocolatey shim of the same name).
 fn extend_deduped(items: &mut Vec<Item>, extra: Vec<Item>) {
-    let existing: std::collections::HashSet<String> =
+    let mut existing: std::collections::HashSet<String> =
         items.iter().map(|it| it.title.to_ascii_lowercase()).collect();
-    items.extend(
-        extra
-            .into_iter()
-            .filter(|it| !existing.contains(&it.title.to_ascii_lowercase())),
-    );
+    for item in extra {
+        if existing.insert(item.title.to_ascii_lowercase()) {
+            items.push(item);
+        }
+    }
 }
 
-/// Heavy scan: start menu apps + system tools + 主要なフォルダ + custom folders
-/// + Chocolatey shims + PATH executables + builtins.
+/// App Paths often contains entries such as `notepad.exe` and `PowerShell.exe`
+/// that are already represented by the curated system-tool items. Compare both
+/// directions because the registered item may have a friendly name while its
+/// executable name is present only in its key.
+fn conflicts_with_curated_tool(item: &Item, tools: &[Item]) -> bool {
+    let item_title = item.title.to_ascii_lowercase();
+    let item_key = item.key.to_ascii_lowercase();
+    tools.iter().any(|tool| {
+        let tool_title = tool.title.to_ascii_lowercase();
+        let tool_key = tool.key.to_ascii_lowercase();
+        tool_key.contains(&item_title) || item_key.contains(&tool_title)
+    })
+}
+
+/// Heavy scan: registered apps + start menu apps + system tools + 主要なフォルダ
+/// + custom folders + Chocolatey shims + PATH executables + builtins.
 pub fn scan_indexed(config: &Config) -> Vec<Item> {
     let tools = systools::scan();
     let mut items: Vec<Item> = Vec::new();
@@ -133,12 +148,21 @@ pub fn scan_indexed(config: &Config) -> Vec<Item> {
         // entry's key contains those English names, so drop the Start Menu
         // duplicate and show only the curated one.
         let tool_keys: Vec<String> = tools.iter().map(|t| t.key.to_lowercase()).collect();
-        items.extend(apps::scan().into_iter().filter(|it| {
+        extend_deduped(&mut items, apps::scan().into_iter().filter(|it| {
             let title = it.title.to_lowercase();
             it.title.chars().count() < 4 || !tool_keys.iter().any(|k| k.contains(&title))
-        }));
+        }).collect());
     }
+    let registered_apps = if config.scan_registered_apps {
+        registered::scan()
+            .into_iter()
+            .filter(|it| !conflicts_with_curated_tool(it, &tools))
+            .collect()
+    } else {
+        Vec::new()
+    };
     items.extend(tools);
+    extend_deduped(&mut items, registered_apps);
     if config.system_commands {
         items.extend(systools::power_items());
     }
