@@ -2,11 +2,12 @@ use crate::winctl::WindowCtl;
 use eframe::egui;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Mutex, OnceLock, RwLock};
+use std::sync::{mpsc, Arc, OnceLock, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
     UnhookWindowsHookEx, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
@@ -27,7 +28,6 @@ struct HookState {
     hotkey: RwLock<Option<HotKey>>,
     held_modifier_keys: AtomicU32,
     space_down: AtomicBool,
-    last_hook_event: Mutex<Option<Instant>>,
     trigger_tx: mpsc::Sender<()>,
 }
 
@@ -38,19 +38,51 @@ impl HotkeyInput {
             hotkey: RwLock::new(hotkey),
             held_modifier_keys: AtomicU32::new(0),
             space_down: AtomicBool::new(false),
-            last_hook_event: Mutex::new(None),
             trigger_tx,
         });
 
         thread::Builder::new()
-            .name("kwick-hotkey-toggle".into())
+            .name("kwick-hotkey-show".into())
+            .spawn(move || loop {
+                let event = if ctl.is_activating() {
+                    trigger_rx.recv_timeout(Duration::from_millis(50))
+                } else {
+                    trigger_rx
+                        .recv()
+                        .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                };
+                match event {
+                    Ok(()) => ctl.show(),
+                    Err(mpsc::RecvTimeoutError::Timeout) => ctl.retry_show(),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+                ctx.request_repaint();
+            })
+            .expect("failed to start hotkey show thread");
+
+        // Independent of both the UI message loop and the keyboard hook (which
+        // Windows can silently remove after a timeout). Only inspect key state;
+        // never synthesize input. Duplicate requests are safe: all paths show.
+        let poll_state = state.clone();
+        thread::Builder::new()
+            .name("kwick-hotkey-poll".into())
             .spawn(move || {
-                while trigger_rx.recv().is_ok() {
-                    ctl.toggle();
-                    ctx.request_repaint();
+                let mut was_down = false;
+                loop {
+                    let hotkey = poll_state.hotkey.read().ok().and_then(|h| *h);
+                    let down = hotkey.is_some_and(|h| {
+                        h.key == Code::Space
+                            && key_down(0x20)
+                            && expected_modifiers(h.mods) == polled_modifiers()
+                    });
+                    if down && !was_down {
+                        let _ = poll_state.trigger_tx.send(());
+                    }
+                    was_down = down;
+                    thread::sleep(Duration::from_millis(10));
                 }
             })
-            .expect("failed to start hotkey toggle thread");
+            .expect("failed to start hotkey polling thread");
 
         let hook_state = state.clone();
         thread::Builder::new()
@@ -67,14 +99,11 @@ impl HotkeyInput {
         }
         self.state.held_modifier_keys.store(0, Ordering::SeqCst);
         self.state.space_down.store(false, Ordering::SeqCst);
-        if let Ok(mut last) = self.state.last_hook_event.lock() {
-            *last = None;
-        }
     }
 
-    /// Route RegisterHotKey events through the same toggle worker. The hook
-    /// normally sees the physical/injected key first, so suppress its paired
-    /// WM_HOTKEY notification rather than toggling twice.
+    /// Every source requests show, so even delayed or reordered duplicate
+    /// notifications cannot close the launcher. Do not discard a valid press
+    /// just because a previous hook event happened recently.
     pub fn on_registered_event(&self, id: u32) {
         let matches_active = self
             .state
@@ -87,17 +116,28 @@ impl HotkeyInput {
             return;
         }
 
-        let hook_was_recent = self
-            .state
-            .last_hook_event
-            .lock()
-            .ok()
-            .and_then(|last| *last)
-            .is_some_and(|last| last.elapsed() < Duration::from_millis(250));
-        if !hook_was_recent {
-            let _ = self.state.trigger_tx.send(());
+        let _ = self.state.trigger_tx.send(());
+    }
+}
+
+fn key_down(vk: i32) -> bool {
+    unsafe { GetAsyncKeyState(vk) < 0 }
+}
+
+fn polled_modifiers() -> u32 {
+    let mut modifiers = 0;
+    for (vk, flag) in [
+        (0x10, MOD_SHIFT),
+        (0x11, MOD_CONTROL),
+        (0x12, MOD_ALT),
+        (0x5B, MOD_SUPER),
+        (0x5C, MOD_SUPER),
+    ] {
+        if key_down(vk) {
+            modifiers |= flag;
         }
     }
+    modifiers
 }
 
 fn run_keyboard_hook(state: Arc<HookState>) {
@@ -200,9 +240,6 @@ impl HookState {
             return;
         }
 
-        if let Ok(mut last) = self.last_hook_event.lock() {
-            *last = Some(Instant::now());
-        }
         let _ = self.trigger_tx.send(());
     }
 }
@@ -271,7 +308,7 @@ mod tests {
     };
     use global_hotkey::hotkey::{HotKey, Modifiers};
     use std::sync::atomic::{AtomicBool, AtomicU32};
-    use std::sync::{mpsc, Mutex, RwLock};
+    use std::sync::{mpsc, RwLock};
     use windows::Win32::UI::WindowsAndMessaging::{
         KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
     };
@@ -297,14 +334,13 @@ mod tests {
     }
 
     #[test]
-    fn detects_alt_space_and_suppresses_its_registered_duplicate() {
+    fn detects_alt_space_and_keeps_registered_fallback_available() {
         let hotkey: HotKey = "alt+space".parse().unwrap();
         let (trigger_tx, trigger_rx) = mpsc::channel();
         let state = std::sync::Arc::new(HookState {
             hotkey: RwLock::new(Some(hotkey)),
             held_modifier_keys: AtomicU32::new(0),
             space_down: AtomicBool::new(false),
-            last_hook_event: Mutex::new(None),
             trigger_tx,
         });
 
@@ -327,6 +363,19 @@ mod tests {
 
         let input = HotkeyInput { state };
         input.on_registered_event(hotkey.id());
+        assert!(trigger_rx.try_recv().is_ok());
+        input.on_registered_event(hotkey.id().wrapping_add(1));
+        assert!(trigger_rx.try_recv().is_err());
+
+        // Auto-repeat in the hook must not continually steal focus.
+        input.state.on_keyboard_event(
+            WM_KEYDOWN,
+            &KBDLLHOOKSTRUCT {
+                vkCode: 0x20,
+                flags: LLKHF_ALTDOWN,
+                ..Default::default()
+            },
+        );
         assert!(trigger_rx.try_recv().is_err());
 
         input.state.on_keyboard_event(
@@ -350,6 +399,35 @@ mod tests {
                 ..Default::default()
             },
         );
+        assert!(trigger_rx.try_recv().is_err());
+
+        // Releasing Space rearms the next physical shortcut immediately.
+        input.state.on_keyboard_event(
+            WM_KEYUP,
+            &KBDLLHOOKSTRUCT {
+                vkCode: 0x20,
+                ..Default::default()
+            },
+        );
+        input.state.on_keyboard_event(
+            WM_SYSKEYDOWN,
+            &KBDLLHOOKSTRUCT {
+                vkCode: 0x20,
+                flags: LLKHF_ALTDOWN,
+                ..Default::default()
+            },
+        );
+        assert!(trigger_rx.try_recv().is_ok());
+
+        // Settings changes must disable the previous registered binding.
+        let replacement: HotKey = "ctrl+space".parse().unwrap();
+        input.set_hotkey(Some(replacement));
+        input.on_registered_event(hotkey.id());
+        assert!(trigger_rx.try_recv().is_err());
+        input.on_registered_event(replacement.id());
+        assert!(trigger_rx.try_recv().is_ok());
+        input.set_hotkey(None);
+        input.on_registered_event(replacement.id());
         assert!(trigger_rx.try_recv().is_err());
     }
 }

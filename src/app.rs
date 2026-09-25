@@ -178,6 +178,19 @@ fn register_hotkey(
                 );
             }
             Err(e) => {
+                // Space bindings also have an independent keyboard hook and
+                // key-state monitor. Keep the requested binding on conflicts.
+                if i == 0 && hotkey.key == global_hotkey::hotkey::Code::Space {
+                    return (
+                        Some(Binding {
+                            hotkey,
+                            spec: spec.to_string(),
+                        }),
+                        Some(format!(
+                            "'{spec}' のOS登録に失敗したため、直接キー監視で起動します ({e})"
+                        )),
+                    );
+                }
                 if i == 0 {
                     first_error = Some(format!("'{spec}' は他のアプリが使用中です ({e})"));
                 }
@@ -542,7 +555,7 @@ impl KwickApp {
             active_hotkey.as_ref().map(|binding| binding.hotkey),
         );
 
-        // Toggle straight from the hotkey thread: while the window is hidden
+        // Show straight from the hotkey thread: while the window is hidden
         // the event loop gets no paint events, so this cannot go through the
         // app's update().
         {
@@ -1055,9 +1068,16 @@ impl eframe::App for KwickApp {
         let focused = ctx.input(|i| i.focused);
         if focused {
             self.had_focus = true;
+        } else if self.ctl.is_activating() {
+            // A delayed focus-loss notification from before this show request
+            // must not immediately hide the window again.
+            self.had_focus = false;
         } else if self.had_focus {
             self.hide_window();
             return;
+        }
+        if self.ctl.is_activating() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
         // Settings view: only Escape is claimed, so the widgets keep the rest.
