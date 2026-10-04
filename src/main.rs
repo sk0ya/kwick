@@ -19,6 +19,7 @@ mod launch;
 mod lua_host;
 mod matcher;
 mod reading;
+mod preview;
 mod providers;
 mod startup;
 mod tray;

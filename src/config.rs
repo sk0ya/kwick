@@ -26,6 +26,8 @@ pub struct Config {
     /// Remember copied text (memory only) for the clipboard mode.
     pub clipboard_history: bool,
     pub clipboard_history_size: usize,
+    /// Preview pane next to the results (toggled with Ctrl+P).
+    pub preview: bool,
 }
 
 /// What to type first to enter each search mode. An empty string turns the
@@ -87,6 +89,7 @@ impl Default for Config {
             prefixes: Prefixes::default(),
             clipboard_history: true,
             clipboard_history_size: 50,
+            preview: false,
         }
     }
 }
@@ -205,6 +208,7 @@ fn apply(text: &str, config: &Config) -> Result<String, String> {
     doc["special_folders"] = value(config.special_folders);
     doc["clipboard_history"] = value(config.clipboard_history);
     doc["clipboard_history_size"] = value(config.clipboard_history_size as i64);
+    doc["preview"] = value(config.preview);
     for (key, titles) in [("pinned", &config.pinned), ("hidden", &config.hidden)] {
         if titles.is_empty() {
             doc.remove(key);

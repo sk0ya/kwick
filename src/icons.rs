@@ -28,11 +28,20 @@ impl IconCache {
                     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
                 }
                 while let Ok(path) = rx.recv() {
-                    let texture = extract_rgba(&path).map(|(pixels, w, h)| {
+                    let pixels = match path.strip_prefix(THUMB) {
+                        Some(file) => extract_thumbnail(file),
+                        None => extract_rgba(&path),
+                    };
+                    let texture = pixels.map(|(pixels, w, h)| {
                         let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
                         ctx.load_texture(&path, image, egui::TextureOptions::LINEAR)
                     });
-                    ready.lock().unwrap().insert(path, texture);
+                    let mut ready = ready.lock().unwrap();
+                    if path.starts_with(THUMB) {
+                        // Thumbnails are big; keep only the latest one.
+                        ready.retain(|k, _| !k.starts_with(THUMB));
+                    }
+                    ready.insert(path, texture);
                     ctx.request_repaint();
                 }
             });
@@ -52,6 +61,90 @@ impl IconCache {
             let _ = self.tx.send(path.to_string());
         }
         None
+    }
+
+    /// Shell thumbnail of a picture/video/PDF for the preview pane.
+    pub fn thumbnail(&mut self, file: &str) -> Option<egui::TextureHandle> {
+        let key = format!("{THUMB}{file}");
+        if !self.requested.contains(&key) {
+            // The worker drops older thumbnails; let them be requested again.
+            self.requested.retain(|k| !k.starts_with(THUMB));
+        }
+        self.get(&key)
+    }
+}
+
+const THUMB: &str = "thumb:";
+
+/// A 256px thumbnail from the shell's thumbnail cache (only real
+/// thumbnails: files without one return None rather than their icon).
+fn extract_thumbnail(path: &str) -> Option<(Vec<u8>, usize, usize)> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::{
+        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    };
+    use windows::Win32::UI::Shell::{
+        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_RESIZETOFIT,
+        SIIGBF_THUMBNAILONLY,
+    };
+    unsafe {
+        let factory: IShellItemImageFactory =
+            SHCreateItemFromParsingName(&HSTRING::from(path), None).ok()?;
+        let hbm = factory
+            .GetImage(SIZE { cx: 256, cy: 256 }, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY)
+            .ok()?;
+        let result = (|| {
+            let mut bmp = BITMAP::default();
+            if GetObjectW(
+                hbm.into(),
+                std::mem::size_of::<BITMAP>() as i32,
+                Some(&mut bmp as *mut BITMAP as *mut _),
+            ) == 0
+            {
+                return None;
+            }
+            let (w, h) = (bmp.bmWidth, bmp.bmHeight.abs());
+            let mut bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut pixels = vec![0u8; (w * h * 4) as usize];
+            let hdc = GetDC(None);
+            let got = GetDIBits(
+                hdc,
+                hbm,
+                0,
+                h as u32,
+                Some(pixels.as_mut_ptr() as *mut _),
+                &mut bmi,
+                DIB_RGB_COLORS,
+            );
+            ReleaseDC(None, hdc);
+            if got == 0 {
+                return None;
+            }
+            // Photos come without alpha; treat all-zero alpha as opaque.
+            let opaque = pixels.chunks_exact(4).all(|px| px[3] == 0);
+            for px in pixels.chunks_exact_mut(4) {
+                px.swap(0, 2);
+                if opaque {
+                    px[3] = 255;
+                }
+            }
+            Some((pixels, w as usize, h as usize))
+        })();
+        let _ = DeleteObject(hbm.into());
+        result
     }
 }
 

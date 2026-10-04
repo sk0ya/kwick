@@ -55,6 +55,7 @@ pub struct KwickApp {
     /// Listing of the folder being browsed (typed path), reused while only
     /// the name part changes.
     dir_cache: Option<(std::path::PathBuf, Vec<Item>)>,
+    preview: Option<crate::preview::Preview>,
     /// Started on the first file search.
     everything: Option<crate::everything::Everything>,
     files_answer: Option<crate::everything::Answer>,
@@ -654,6 +655,7 @@ impl KwickApp {
             currency: Default::default(),
             rates_pending: false,
             dir_cache: None,
+            preview: None,
             everything: None,
             files_answer: None,
             files_waiting: false,
@@ -1555,6 +1557,7 @@ struct Keys {
     /// Backspace in an empty query box.
     back: bool,
     action_panel: bool,
+    preview: bool,
     submit: Option<Shortcut>,
 }
 
@@ -1591,6 +1594,7 @@ fn take_keys(input: &mut egui::InputState, query_empty: bool, text_selected: boo
             Key::Delete if plain && query_empty => keys.delete = true,
             Key::Backspace if plain && query_empty => keys.back = true,
             Key::K if ctrl && !m.shift => keys.action_panel = true,
+            Key::P if ctrl && !m.shift => keys.preview = true,
             Key::Enter if !m.alt => {
                 keys.submit = Some(match (m.command, m.shift) {
                     (true, true) => Shortcut::CtrlShiftEnter,
@@ -1734,6 +1738,19 @@ impl eframe::App for KwickApp {
         if !self.ctl.is_visible() {
             self.last_visible = false;
             return;
+        }
+
+        if keys.preview {
+            self.config.preview = !self.config.preview;
+            if let Err(e) = config::save(&self.config) {
+                eprintln!("kwick: {e}");
+            }
+            self.reload_stamp = reload_stamp();
+        }
+        let preview_on =
+            self.config.preview && self.panel.is_none() && self.args_prompt.is_none();
+        if preview_on {
+            self.preview_panel(ctx);
         }
 
         let moved = keys.up || keys.down;
@@ -1958,6 +1975,15 @@ impl eframe::App for KwickApp {
                 });
         });
 
+        // The results may have changed while the preview was drawn from the
+        // old ones; draw again with the new selection.
+        if preview_on {
+            let want = self.results.get(self.selected).map(crate::preview::key);
+            if want != self.preview.as_ref().map(|p| p.key.clone()) {
+                ctx.request_repaint();
+            }
+        }
+
         if let Some(i) = self.instant_pending.take() {
             self.selected = i;
             self.trigger(ctx, Shortcut::Enter);
@@ -1979,6 +2005,51 @@ impl eframe::App for KwickApp {
 }
 
 impl KwickApp {
+    /// Right-hand pane with details of the selected result (Ctrl+P).
+    fn preview_panel(&mut self, ctx: &egui::Context) {
+        match self.results.get(self.selected) {
+            Some(item) => {
+                let key = crate::preview::key(item);
+                if self.preview.as_ref().map(|p| &p.key) != Some(&key) {
+                    self.preview = Some(crate::preview::build(item));
+                }
+            }
+            None => self.preview = None,
+        }
+        let width = (self.config.width * 0.42).max(200.0);
+        let Self { preview, icons, .. } = self;
+        egui::SidePanel::right("kwick-preview")
+            .resizable(false)
+            .exact_width(width)
+            .show(ctx, |ui| {
+                let Some(p) = preview else {
+                    ui.label(egui::RichText::new("プレビューなし").weak());
+                    return;
+                };
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(&p.title).strong().size(15.0));
+                        ui.add_space(4.0);
+                        if let Some(tex) = p.thumbnail.as_deref().and_then(|f| icons.thumbnail(f)) {
+                            let size = tex.size_vec2();
+                            let scale = (ui.available_width() / size.x).min(1.0);
+                            ui.add(egui::Image::new(&tex).fit_to_exact_size(size * scale));
+                            ui.add_space(4.0);
+                        }
+                        for (label, value) in &p.facts {
+                            ui.label(egui::RichText::new(*label).weak().size(10.0));
+                            ui.label(egui::RichText::new(value).size(12.0));
+                            ui.add_space(2.0);
+                        }
+                        if let Some(text) = &p.text {
+                            ui.separator();
+                            ui.label(egui::RichText::new(text).monospace().size(11.0));
+                        }
+                    });
+            });
+    }
+
     /// Tab: step into the selected folder (or, while browsing a path, take
     /// the selected file's path); on a mode entry, enter the mode.
     fn complete(&mut self) {

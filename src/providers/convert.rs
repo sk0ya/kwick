@@ -388,6 +388,15 @@ fn format_datetime(unix: i64, offset: i64) -> String {
     )
 }
 
+/// A file time in local time, e.g. "2026-10-05 (月) 09:30:00".
+pub fn format_system_time(t: SystemTime) -> String {
+    let unix = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    format_datetime(unix, local_offset())
+}
+
 fn relative(days: i64, today: i64) -> String {
     match days - today {
         0 => "今日".into(),
