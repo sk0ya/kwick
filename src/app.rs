@@ -71,6 +71,8 @@ pub struct KwickApp {
     first_frame: bool,
     history: History,
     had_focus: bool,
+    /// IME composition (未確定文字列) in progress: Enter/Esc/arrows belong to the IME.
+    ime_composing: bool,
     hotkey_notice: Option<String>,
     /// Currently registered hotkey, kept so it can be unregistered on change.
     active_hotkey: Option<Binding>,
@@ -612,6 +614,7 @@ impl KwickApp {
             first_frame: true,
             history: History::load(),
             had_focus: false,
+            ime_composing: false,
             hotkey_notice,
             active_hotkey,
             tray_flags,
@@ -619,6 +622,32 @@ impl KwickApp {
             hotkey_manager,
             hotkey_input,
         }
+    }
+
+    /// Track IME composition from this frame's events. Returns true when the
+    /// IME owns the keyboard this frame (composing now, or it just ended).
+    fn update_ime_state(&mut self, ctx: &egui::Context) -> bool {
+        let mut busy = self.ime_composing;
+        ctx.input(|i| {
+            for event in &i.events {
+                let egui::Event::Ime(ime) = event else {
+                    continue;
+                };
+                match ime {
+                    egui::ImeEvent::Preedit(text) => {
+                        self.ime_composing = !text.is_empty();
+                        busy = true;
+                    }
+                    egui::ImeEvent::Commit(_) => {
+                        self.ime_composing = false;
+                        busy = true;
+                    }
+                    egui::ImeEvent::Disabled => self.ime_composing = false,
+                    egui::ImeEvent::Enabled => {}
+                }
+            }
+        });
+        busy
     }
 
     /// Reset state when the window (re)appears.
@@ -631,6 +660,7 @@ impl KwickApp {
         self.results.clear();
         self.selected = 0;
         self.had_focus = false;
+        self.ime_composing = false;
         self.needs_search = true; // populate the most-used view
         self.view = View::Search;
         self.hotkey_draft = self.config.hotkey.clone();
@@ -1094,7 +1124,15 @@ impl eframe::App for KwickApp {
         // Delete is only claimed while the query is empty (the most-used
         // view), so it still edits text while typing a query.
         let history_view = self.query.trim().is_empty();
+        // While composing, the IME still lets the raw key events through, so
+        // Enter (確定) would also launch the selection. Skip navigation for the
+        // whole frame that carries IME events, as the key and the commit may
+        // land together.
+        let ime_busy = self.update_ime_state(ctx);
         let (esc, enter, up, down, del) = ctx.input_mut(|i| {
+            if ime_busy {
+                return (false, false, false, false, false);
+            }
             (
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
