@@ -113,13 +113,33 @@ fn extract_rgba(path: &str) -> Option<(Vec<u8>, usize, usize)> {
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let mut info = SHFILEINFOW::default();
     unsafe {
-        let res = SHGetFileInfoW(
-            PCWSTR(wide.as_ptr()),
-            FILE_FLAGS_AND_ATTRIBUTES(0),
-            Some(&mut info),
-            std::mem::size_of::<SHFILEINFOW>() as u32,
-            SHGFI_ICON | SHGFI_LARGEICON,
-        );
+        // Shell namespace items (shell:AppsFolder\<AUMID>) have no file
+        // path; ask by ID list instead.
+        let res = if path.starts_with("shell:") {
+            use windows::Win32::System::Com::CoTaskMemFree;
+            use windows::Win32::UI::Shell::{SHParseDisplayName, SHGFI_PIDL};
+            let mut pidl = std::ptr::null_mut();
+            if SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None).is_err() {
+                return None;
+            }
+            let res = SHGetFileInfoW(
+                PCWSTR(pidl as *const u16),
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON | SHGFI_PIDL,
+            );
+            CoTaskMemFree(Some(pidl as *const _));
+            res
+        } else {
+            SHGetFileInfoW(
+                PCWSTR(wide.as_ptr()),
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            )
+        };
         if res == 0 || info.hIcon.is_invalid() {
             return None;
         }

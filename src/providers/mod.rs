@@ -4,6 +4,7 @@ pub mod pathbin;
 pub mod registered;
 pub mod shellfolders;
 pub mod systools;
+pub mod uwp;
 
 use crate::config::Config;
 
@@ -297,8 +298,19 @@ pub fn scan_indexed(config: &Config) -> Vec<Item> {
     } else {
         Vec::new()
     };
+    // Store apps that duplicate a curated tool (Win11's packaged メモ帳,
+    // 設定...) are dropped in favor of the curated entry.
+    let store_apps: Vec<Item> = if config.scan_uwp_apps {
+        uwp::scan()
+            .into_iter()
+            .filter(|it| !conflicts_with_curated_tool(it, &tools))
+            .collect()
+    } else {
+        Vec::new()
+    };
     items.extend(tools);
     extend_deduped(&mut items, registered_apps);
+    extend_deduped(&mut items, store_apps);
     if config.system_commands {
         items.extend(systools::power_items());
     }

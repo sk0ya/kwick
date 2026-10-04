@@ -150,14 +150,18 @@ fn reload_stamp() -> ReloadStamp {
     }
 }
 
-fn scan_key(config: &Config) -> (bool, bool, bool, bool, bool, bool, Vec<config::ScanFolder>) {
+/// The settings that change what the background scan produces.
+fn scan_key(config: &Config) -> (Vec<bool>, Vec<config::ScanFolder>) {
     (
-        config.scan_start_menu,
-        config.scan_registered_apps,
-        config.scan_path,
-        config.scan_chocolatey,
-        config.system_commands,
-        config.special_folders,
+        vec![
+            config.scan_start_menu,
+            config.scan_registered_apps,
+            config.scan_uwp_apps,
+            config.scan_path,
+            config.scan_chocolatey,
+            config.system_commands,
+            config.special_folders,
+        ],
         config.scan_folders.clone(),
     )
 }
@@ -865,6 +869,11 @@ impl KwickApp {
                         "登録済みアプリ (App Paths)",
                         "Windows に起動用として登録された GUI アプリ",
                         &mut self.config.scan_registered_apps,
+                    ),
+                    (
+                        "Microsoft Store アプリ",
+                        "電卓、Windows Terminal など (UWP)",
+                        &mut self.config.scan_uwp_apps,
                     ),
                     (
                         "PATH 上の実行ファイル",

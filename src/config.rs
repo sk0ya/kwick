@@ -10,6 +10,7 @@ pub struct Config {
     pub height: f32,
     pub scan_start_menu: bool,
     pub scan_registered_apps: bool,
+    pub scan_uwp_apps: bool,
     pub scan_path: bool,
     pub scan_chocolatey: bool,
     pub system_commands: bool,
@@ -32,6 +33,7 @@ impl Default for Config {
             height: 420.0,
             scan_start_menu: false,
             scan_registered_apps: true,
+            scan_uwp_apps: true,
             scan_path: false,
             scan_chocolatey: false,
             system_commands: true,
@@ -146,6 +148,7 @@ fn apply(text: &str, config: &Config) -> Result<String, String> {
     doc["height"] = value(config.height as f64);
     doc["scan_start_menu"] = value(config.scan_start_menu);
     doc["scan_registered_apps"] = value(config.scan_registered_apps);
+    doc["scan_uwp_apps"] = value(config.scan_uwp_apps);
     doc["scan_path"] = value(config.scan_path);
     doc["scan_chocolatey"] = value(config.scan_chocolatey);
     doc["system_commands"] = value(config.system_commands);
@@ -241,6 +244,9 @@ scan_start_menu = false
 # Windows の App Paths に登録されたアプリを検索対象に含めるか。
 # PATH と違い、起動用に登録された GUI アプリ中心なので候補が増えすぎません。
 scan_registered_apps = true
+
+# Microsoft Store (UWP) アプリ(電卓、Windows Terminal など)を検索対象に含めるか。
+scan_uwp_apps = true
 
 # PATH 上の実行ファイル (.exe/.bat/.cmd/.com) を検索対象に含めるか。
 # true にすると CLI ツールなども起動できますが、システムの exe が大量に候補に入ります。
