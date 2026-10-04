@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod convert;
 pub mod folders;
 pub mod pathbin;
 pub mod registered;

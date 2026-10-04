@@ -10,6 +10,7 @@ mod clipboard;
 mod config;
 mod fonts;
 mod history;
+mod http;
 mod hotkey;
 mod icons;
 mod instance;

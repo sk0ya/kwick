@@ -49,6 +49,9 @@ pub struct KwickApp {
     /// The query was replaced programmatically; put the cursor at its end.
     cursor_to_end: bool,
     clip_history: crate::clipboard::ClipHistory,
+    currency: providers::convert::Currency,
+    /// Exchange rates were being downloaded at the last search.
+    rates_pending: bool,
 
     view: View,
     /// Hotkey text being edited in the settings view (applied on lost focus).
@@ -640,6 +643,8 @@ impl KwickApp {
             instant_pending: None,
             cursor_to_end: false,
             clip_history,
+            currency: Default::default(),
+            rates_pending: false,
             view: View::Search,
             ext_drafts: Vec::new(),
             startup_enabled: crate::startup::is_enabled(),
@@ -1111,6 +1116,11 @@ impl KwickApp {
             return;
         }
 
+        // Inline answers: unit/currency conversion, dates.
+        let mut answers = providers::convert::query(&query, &self.currency, &self.egui_ctx);
+        self.rates_pending = self.currency.is_fetching();
+        self.results.append(&mut answers);
+
         // Web searches: "keyword rest-of-query"
         for ws in &self.config.web_searches {
             if ws.keyword.is_empty() || !ws.url.contains("{query}") {
@@ -1519,6 +1529,10 @@ fn take_keys(input: &mut egui::InputState, query_empty: bool, text_selected: boo
 impl eframe::App for KwickApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_rescan();
+        if self.rates_pending && !self.currency.is_fetching() {
+            self.rates_pending = false;
+            self.needs_search = true;
+        }
         if self.tray_flags.reload.swap(false, Ordering::SeqCst) {
             self.request_rescan();
             self.needs_search = true;
@@ -1771,6 +1785,10 @@ impl eframe::App for KwickApp {
                                             ui.add(
                                                 egui::Image::new(&tex).fit_to_exact_size(icon_size),
                                             );
+                                        }
+                                        // Inline answers (calculator, conversions) get "=".
+                                        None if matches!(item.action, Action::Copy(_)) => {
+                                            fallback_icon(ui, "=", icon_size)
                                         }
                                         None => fallback_icon(ui, &item.title, icon_size),
                                     }
