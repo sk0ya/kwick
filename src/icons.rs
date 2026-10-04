@@ -42,7 +42,7 @@ impl IconCache {
                         ready.retain(|k, _| !k.starts_with(THUMB));
                     }
                     ready.insert(path, texture);
-                    ctx.request_repaint();
+                    crate::winctl::wake(&ctx);
                 }
             });
         }

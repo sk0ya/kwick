@@ -140,10 +140,61 @@ impl WindowCtl {
         unsafe {
             if IsWindowVisible(hwnd).as_bool() {
                 let _ = ShowWindowAsync(hwnd, SW_HIDE);
+                settle_hidden(hwnd);
             }
         }
     }
 
+}
+
+static INSTANCE: std::sync::OnceLock<std::sync::Arc<WindowCtl>> = std::sync::OnceLock::new();
+
+/// Make `ctl` the window that `wake` checks.
+pub fn register(ctl: std::sync::Arc<WindowCtl>) {
+    let _ = INSTANCE.set(ctl);
+}
+
+/// Request a repaint from a background thread, but only while the launcher
+/// is shown (or being shown). A repaint requested while hidden can never
+/// happen (no WM_PAINT for hidden windows) and leaves eframe polling at full
+/// speed; whatever changed is picked up by the frame drawn on the next show.
+pub fn wake(ctx: &eframe::egui::Context) {
+    if INSTANCE.get().is_none_or(|ctl| ctl.is_visible()) {
+        ctx.request_repaint();
+    }
+}
+
+/// Let eframe go idle after we hid a window it had just shown.
+///
+/// Showing/hiding produces window events after which eframe wants one more
+/// frame: it switches winit to `ControlFlow::Poll` and asks for a redraw.
+/// A hidden window never gets WM_PAINT, so that redraw never happens and the
+/// event loop spins at full speed (a `--hidden` start burned a whole core).
+/// Delivering WM_PAINT ourselves runs that frame; eframe then goes back to
+/// waiting.
+fn settle_hidden(hwnd: HWND) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_PAINT};
+    let raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        for delay in [150, 600] {
+            std::thread::sleep(Duration::from_millis(delay));
+            unsafe {
+                let _ = SendMessageTimeoutW(
+                    HWND(raw as *mut _),
+                    WM_PAINT,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG,
+                    500,
+                    None,
+                );
+            }
+        }
+    });
+}
+
+impl WindowCtl {
     pub fn toggle(&self) {
         if self.is_visible() {
             self.hide();

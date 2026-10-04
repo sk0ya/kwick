@@ -49,7 +49,7 @@ impl Everything {
                     if worker_tx.send((query, result)).is_err() {
                         break;
                     }
-                    ctx.request_repaint();
+                    crate::winctl::wake(&ctx);
                 }
             })
             .ok();

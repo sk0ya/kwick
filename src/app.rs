@@ -600,6 +600,7 @@ impl KwickApp {
         }
 
         let ctl = Arc::new(WindowCtl::new(win32_hwnd(cc), start_visible));
+        crate::winctl::register(ctl.clone());
         crate::instance::listen_show(ctl.clone(), cc.egui_ctx.clone());
         let hotkey_input = HotkeyInput::new(
             cc.egui_ctx.clone(),

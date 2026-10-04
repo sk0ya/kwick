@@ -379,7 +379,7 @@ fn install_api(
                     body: &body,
                 });
                 let _ = tx.send((id, result));
-                ctx.request_repaint();
+                crate::winctl::wake(&ctx);
             });
             Ok(())
         })?,

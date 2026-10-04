@@ -269,7 +269,7 @@ impl Currency {
                 Ok(rates) => RateState::Ready(rates),
                 Err(e) => RateState::Failed(e),
             };
-            ctx.request_repaint();
+            crate::winctl::wake(&ctx);
         });
     }
 

@@ -55,7 +55,7 @@ pub fn listen_show(ctl: Arc<WindowCtl>, ctx: egui::Context) {
                 break;
             }
             ctl.show();
-            ctx.request_repaint();
+            crate::winctl::wake(&ctx);
         })
         .ok();
 }

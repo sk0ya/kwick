@@ -79,7 +79,7 @@ pub fn init(
                     "quit" => std::process::exit(0),
                     _ => {}
                 }
-                ctx.request_repaint();
+                crate::winctl::wake(&ctx);
             }
         });
     }
@@ -94,7 +94,7 @@ pub fn init(
                 } = event
                 {
                     ctl.toggle();
-                    ctx.request_repaint();
+                    crate::winctl::wake(&ctx);
                 }
             }
         });

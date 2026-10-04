@@ -56,7 +56,7 @@ impl HotkeyInput {
                     Err(mpsc::RecvTimeoutError::Timeout) => ctl.retry_show(),
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
-                ctx.request_repaint();
+                crate::winctl::wake(&ctx);
             })
             .expect("failed to start hotkey show thread");
 
