@@ -55,6 +55,11 @@ pub struct KwickApp {
     /// Listing of the folder being browsed (typed path), reused while only
     /// the name part changes.
     dir_cache: Option<(std::path::PathBuf, Vec<Item>)>,
+    /// Started on the first file search.
+    everything: Option<crate::everything::Everything>,
+    files_answer: Option<crate::everything::Answer>,
+    /// A file search is out; re-search when its answer comes in.
+    files_waiting: bool,
 
     view: View,
     /// Hotkey text being edited in the settings view (applied on lost focus).
@@ -649,6 +654,9 @@ impl KwickApp {
             currency: Default::default(),
             rates_pending: false,
             dir_cache: None,
+            everything: None,
+            files_answer: None,
+            files_waiting: false,
             view: View::Search,
             ext_drafts: Vec::new(),
             startup_enabled: crate::startup::is_enabled(),
@@ -714,6 +722,7 @@ impl KwickApp {
         self.panel = None;
         self.args_prompt = None;
         self.dir_cache = None;
+        self.files_answer = None;
         self.had_focus = false;
         self.ime_composing = false;
         self.needs_search = true; // populate the most-used view
@@ -1131,6 +1140,11 @@ impl KwickApp {
             self.show_filtered(items, rest);
             return;
         }
+        if let Some(rest) = mode_rest(&raw, &prefixes.files) {
+            let rest = rest.trim().to_string();
+            self.search_files(&rest);
+            return;
+        }
         if let Some(rest) = mode_rest(&raw, &prefixes.clipboard) {
             let items = clip_items(&self.clip_history.clips(), self.config.clipboard_history);
             self.show_filtered(items, rest);
@@ -1218,6 +1232,47 @@ impl KwickApp {
             .iter()
             .position(|it| it.instant && it.alias.eq_ignore_ascii_case(&query));
         self.instant_pending = instant;
+    }
+
+    /// File search mode. Everything answers on a worker thread; until the
+    /// answer for this exact text arrives, the previous one stays on screen.
+    fn search_files(&mut self, text: &str) {
+        if text.is_empty() {
+            self.results = vec![Item::new(
+                "ファイル名を入力",
+                "Everything でファイルとフォルダを検索します",
+                Action::Copy(String::new()),
+            )
+            .transient()];
+            return;
+        }
+        let everything = self
+            .everything
+            .get_or_insert_with(|| crate::everything::Everything::new(self.egui_ctx.clone()));
+        if let Some(answer) = everything.poll() {
+            self.files_answer = Some(answer);
+        }
+        // Answers (errors included) are dropped when the window is shown
+        // again, so a newly started Everything is picked up then.
+        let current = self.files_answer.as_ref().filter(|(q, _)| q == text);
+        if current.is_none() {
+            everything.request(text);
+        }
+        match self.files_answer.as_ref().map(|(_, r)| r) {
+            Some(Ok(items)) => self.results = items.clone(),
+            Some(Err(e)) => {
+                self.results = vec![Item::new(
+                    e.clone(),
+                    "Everything (voidtools.com) をインストールして起動してください",
+                    Action::Url("https://www.voidtools.com/".into()),
+                )
+                .transient()]
+            }
+            None => {
+                self.results = vec![Item::new("検索中…", text, Action::Copy(String::new())).transient()]
+            }
+        }
+        self.files_waiting = current.is_none();
     }
 
     /// Results of a search mode: everything in order for an empty query,
@@ -1554,6 +1609,13 @@ fn take_keys(input: &mut egui::InputState, query_empty: bool, text_selected: boo
 impl eframe::App for KwickApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_rescan();
+        if self.files_waiting {
+            if let Some(answer) = self.everything.as_ref().and_then(|e| e.poll()) {
+                self.files_answer = Some(answer);
+                self.files_waiting = false;
+                self.needs_search = true;
+            }
+        }
         if self.rates_pending && !self.currency.is_fetching() {
             self.rates_pending = false;
             self.needs_search = true;

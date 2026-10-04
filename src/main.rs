@@ -8,6 +8,7 @@ use eframe::egui;
 mod app;
 mod clipboard;
 mod config;
+mod everything;
 mod fonts;
 mod history;
 mod http;
