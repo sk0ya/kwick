@@ -22,7 +22,9 @@ impl Ranker {
         max: usize,
         bonus: impl Fn(&Item) -> u32,
     ) -> Vec<usize> {
-        let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+        // Keys carry hiragana readings, so a katakana query still matches.
+        let query = crate::reading::to_hiragana(query);
+        let pattern = Pattern::parse(&query, CaseMatching::Ignore, Normalization::Smart);
         let mut buf = Vec::new();
         let mut scored: Vec<(u32, usize)> = Vec::new();
         for (i, item) in items.iter().enumerate() {

@@ -178,5 +178,6 @@ pub fn scan_indexed(config: &Config) -> Vec<Item> {
         extend_deduped(&mut items, pathbin::scan());
     }
     items.extend(builtin_items());
+    crate::reading::annotate(&mut items);
     items
 }
