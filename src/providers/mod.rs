@@ -4,6 +4,7 @@ pub mod folders;
 pub mod pathbin;
 pub mod registered;
 pub mod shellfolders;
+pub mod sysops;
 pub mod systools;
 pub mod uwp;
 pub mod winlist;
@@ -51,6 +52,8 @@ pub enum Action {
     /// Paste text into the window that was active before the launcher
     Paste(String),
     ClearClipboardHistory,
+    /// Volume, recycle bin...
+    System(sysops::SysOp),
 }
 
 /// Keyboard shortcut bound to an entry of the action panel.
@@ -258,7 +261,6 @@ pub fn config_items(config: &Config) -> Vec<Item> {
             Action::SetQuery(prefix.clone()),
         );
         item.key = format!("{title} {aliases}");
-        item.rank_boost = 100;
         items.push(item);
     }
     // Quick links: a [[web_searches]] entry without {query} is a fixed
@@ -378,6 +380,7 @@ pub fn scan_indexed(config: &Config) -> Vec<Item> {
     extend_deduped(&mut items, store_apps);
     if config.system_commands {
         items.extend(systools::power_items());
+        items.extend(sysops::items());
     }
     if config.special_folders {
         items.extend(shellfolders::scan());

@@ -1120,6 +1120,9 @@ impl KwickApp {
         let mut answers = providers::convert::query(&query, &self.currency, &self.egui_ctx);
         self.rates_pending = self.currency.is_fetching();
         self.results.append(&mut answers);
+        if self.config.system_commands {
+            self.results.append(&mut providers::sysops::query(&query));
+        }
 
         // Web searches: "keyword rest-of-query"
         for ws in &self.config.web_searches {
@@ -1364,6 +1367,7 @@ impl KwickApp {
             Action::Reveal(path) => launch::reveal(&path),
             Action::Focus(hwnd) => providers::winlist::focus(hwnd),
             Action::Paste(text) => crate::clipboard::paste(&text, self.ctl.previous()),
+            Action::System(op) => providers::sysops::run(op),
             Action::Quit
             | Action::ClearClipboardHistory
             | Action::SetQuery(_)
