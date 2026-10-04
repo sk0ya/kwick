@@ -47,6 +47,9 @@ pub enum Action {
     Kill(Vec<u32>),
     /// Replace the query text (enter a mode such as "w ", complete a path)
     SetQuery(String),
+    /// Paste text into the window that was active before the launcher
+    Paste(String),
+    ClearClipboardHistory,
 }
 
 /// Keyboard shortcut bound to an entry of the action panel.
@@ -158,6 +161,7 @@ impl Item {
             Action::Focus(_) => "このウィンドウに切り替え",
             Action::Kill(_) => "プロセスを終了",
             Action::SetQuery(_) => "このモードで検索",
+            Action::Paste(_) => "貼り付け",
             _ => "開く",
         };
         add(primary, Some(Shortcut::Enter), self.action.clone());

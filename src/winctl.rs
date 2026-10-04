@@ -18,6 +18,7 @@ pub struct WindowCtl {
     hwnd: AtomicIsize,
     visible: AtomicBool,
     activation: Mutex<Option<Instant>>,
+    previous: AtomicIsize,
 }
 
 impl WindowCtl {
@@ -26,6 +27,7 @@ impl WindowCtl {
             hwnd: AtomicIsize::new(hwnd),
             visible: AtomicBool::new(visible),
             activation: Mutex::new(None),
+            previous: AtomicIsize::new(0),
         }
     }
 
@@ -44,8 +46,20 @@ impl WindowCtl {
         self.visible.load(Ordering::SeqCst)
     }
 
+    /// The window that was in front when the launcher was last shown (paste
+    /// target for clipboard history).
+    pub fn previous(&self) -> isize {
+        self.previous.load(Ordering::SeqCst)
+    }
+
     pub fn show(&self) {
         let Some(hwnd) = self.hwnd() else { return };
+        if !self.is_visible() {
+            let front = unsafe { GetForegroundWindow() };
+            if front != hwnd {
+                self.previous.store(front.0 as isize, Ordering::SeqCst);
+            }
+        }
         let mut activation = self.activation.lock().unwrap_or_else(|e| e.into_inner());
         *activation = Some(Instant::now());
         // Publish intent before Windows can deliver paint/focus messages.

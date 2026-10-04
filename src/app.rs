@@ -48,6 +48,7 @@ pub struct KwickApp {
     instant_pending: Option<usize>,
     /// The query was replaced programmatically; put the cursor at its end.
     cursor_to_end: bool,
+    clip_history: crate::clipboard::ClipHistory,
 
     view: View,
     /// Hotkey text being edited in the settings view (applied on lost focus).
@@ -620,6 +621,8 @@ impl KwickApp {
 
         let lua = LuaHost::new(&config::plugin_dir(), cc.egui_ctx.clone());
         let reload_stamp = reload_stamp();
+        let clip_history = crate::clipboard::ClipHistory::default();
+        clip_history.configure(config.clipboard_history, config.clipboard_history_size);
 
         Self {
             hotkey_draft: config.hotkey.clone(),
@@ -636,6 +639,7 @@ impl KwickApp {
             args_prompt: None,
             instant_pending: None,
             cursor_to_end: false,
+            clip_history,
             view: View::Search,
             ext_drafts: Vec::new(),
             startup_enabled: crate::startup::is_enabled(),
@@ -728,6 +732,10 @@ impl KwickApp {
     fn reload_config(&mut self, ctx: &egui::Context, stamp: ReloadStamp) {
         let scan_before = scan_key(&self.config);
         self.config = config::load();
+        self.clip_history.configure(
+            self.config.clipboard_history,
+            self.config.clipboard_history_size,
+        );
         if scan_key(&self.config) != scan_before {
             self.request_rescan();
         } else {
@@ -824,6 +832,10 @@ impl KwickApp {
             return;
         }
         self.settings_dirty = false;
+        self.clip_history.configure(
+            self.config.clipboard_history,
+            self.config.clipboard_history_size,
+        );
         match config::save(&self.config) {
             Ok(()) => {
                 self.settings_status = None;
@@ -913,6 +925,38 @@ impl KwickApp {
                     edits.toggle(&ui.checkbox(flag, label), true);
                     hint(ui, hint_text);
                 }
+
+                section(ui, "検索モード");
+                note(ui, "プレフィックスに続けて入力すると各モードで検索します。空にすると無効");
+                egui::Grid::new("kwick-settings-modes")
+                    .num_columns(2)
+                    .spacing([12.0, 6.0])
+                    .show(ui, |ui| {
+                        for (_, label, prefix) in self.config.prefixes.entries_mut() {
+                            ui.label(label);
+                            edits.field(
+                                &ui.add(egui::TextEdit::singleline(prefix).desired_width(80.0)),
+                                false,
+                            );
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    edits.toggle(
+                        &ui.checkbox(&mut self.config.clipboard_history, "クリップボード履歴"),
+                        false,
+                    );
+                    ui.label("件数");
+                    edits.field(
+                        &ui.add(
+                            egui::DragValue::new(&mut self.config.clipboard_history_size)
+                                .range(1..=500),
+                        ),
+                        false,
+                    );
+                });
+                hint(ui, "コピーしたテキストをメモリ上にだけ保持します (ディスクには保存しません)");
 
                 {
                     let Self {
@@ -1058,6 +1102,11 @@ impl KwickApp {
         }
         if let Some(rest) = mode_rest(&raw, &prefixes.kill) {
             let items = providers::winlist::processes();
+            self.show_filtered(items, rest);
+            return;
+        }
+        if let Some(rest) = mode_rest(&raw, &prefixes.clipboard) {
+            let items = clip_items(&self.clip_history.clips(), self.config.clipboard_history);
             self.show_filtered(items, rest);
             return;
         }
@@ -1272,6 +1321,11 @@ impl KwickApp {
                 self.drop_result(item);
                 return;
             }
+            Action::ClearClipboardHistory => {
+                self.clip_history.clear();
+                self.needs_search = true;
+                return;
+            }
             _ => {}
         }
         if matches!(
@@ -1299,7 +1353,9 @@ impl KwickApp {
             Action::RunAs { cmd, args } => launch::run_as(&cmd, args.as_deref()),
             Action::Reveal(path) => launch::reveal(&path),
             Action::Focus(hwnd) => providers::winlist::focus(hwnd),
+            Action::Paste(text) => crate::clipboard::paste(&text, self.ctl.previous()),
             Action::Quit
+            | Action::ClearClipboardHistory
             | Action::SetQuery(_)
             | Action::CloseWindow(_)
             | Action::Kill(_)
@@ -1326,6 +1382,66 @@ impl KwickApp {
         };
         self.perform(ctx, &prompt.item, action);
     }
+}
+
+/// Clipboard history as results, newest first.
+fn clip_items(clips: &[crate::clipboard::Clip], enabled: bool) -> Vec<Item> {
+    if !enabled {
+        return vec![Item::new(
+            "クリップボード履歴は無効です",
+            "設定の clipboard_history を有効にしてください",
+            Action::OpenSettings,
+        )
+        .transient()];
+    }
+    if clips.is_empty() {
+        return vec![Item::new(
+            "クリップボード履歴は空です",
+            "テキストをコピーするとここに並びます (メモリ上だけに保持)",
+            Action::Copy(String::new()),
+        )
+        .transient()];
+    }
+    let now = std::time::SystemTime::now();
+    clips
+        .iter()
+        .map(|clip| {
+            let first = clip
+                .text
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("");
+            let mut title: String = first.chars().take(80).collect();
+            if first.chars().count() > 80 {
+                title.push('…');
+            }
+            let lines = clip.text.lines().count();
+            let secs = now.duration_since(clip.at).map(|d| d.as_secs()).unwrap_or(0);
+            let ago = match secs {
+                0..=59 => "たった今".to_string(),
+                60..=3599 => format!("{} 分前", secs / 60),
+                3600..=86399 => format!("{} 時間前", secs / 3600),
+                _ => format!("{} 日前", secs / 86400),
+            };
+            let subtitle = if lines > 1 {
+                format!("{lines} 行 · {ago}")
+            } else {
+                format!("{} 文字 · {ago}", clip.text.chars().count())
+            };
+            let mut item = Item::new(title, subtitle, Action::Paste(clip.text.clone()));
+            // Match on the whole text, not just the first line (bounded).
+            item.key = clip.text.chars().take(2000).collect();
+            item.extra = vec![
+                ("コピーだけする".into(), Action::Copy(clip.text.clone())),
+                (
+                    "クリップボード履歴をすべて消去".into(),
+                    Action::ClearClipboardHistory,
+                ),
+            ];
+            item.transient()
+        })
+        .collect()
 }
 
 /// The text after a mode prefix, if `query` starts with it (case-insensitive).

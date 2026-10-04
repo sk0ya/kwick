@@ -23,6 +23,9 @@ pub struct Config {
     /// Titles never shown (action panel: 候補から隠す).
     pub hidden: Vec<String>,
     pub prefixes: Prefixes,
+    /// Remember copied text (memory only) for the clipboard mode.
+    pub clipboard_history: bool,
+    pub clipboard_history_size: usize,
 }
 
 /// What to type first to enter each search mode. An empty string turns the
@@ -82,6 +85,8 @@ impl Default for Config {
             pinned: Vec::new(),
             hidden: Vec::new(),
             prefixes: Prefixes::default(),
+            clipboard_history: true,
+            clipboard_history_size: 50,
         }
     }
 }
@@ -198,6 +203,8 @@ fn apply(text: &str, config: &Config) -> Result<String, String> {
     doc["scan_chocolatey"] = value(config.scan_chocolatey);
     doc["system_commands"] = value(config.system_commands);
     doc["special_folders"] = value(config.special_folders);
+    doc["clipboard_history"] = value(config.clipboard_history);
+    doc["clipboard_history_size"] = value(config.clipboard_history_size as i64);
     for (key, titles) in [("pinned", &config.pinned), ("hidden", &config.hidden)] {
         if titles.is_empty() {
             doc.remove(key);
@@ -324,6 +331,20 @@ system_commands = true
 # 主要なフォルダ(ダウンロード、デスクトップ、AppData、Temp、Program Files など)を
 # 検索対象に含めるか。false にすると候補から消えます。
 special_folders = true
+
+# コピーしたテキストを覚えておき、「cb 」で検索して貼り付けられるようにするか。
+# 履歴はメモリ上にだけ保持し、ディスクには書きません。パスワードマネージャーが
+# 「履歴に残さない」印を付けたコピーは記録しません。
+clipboard_history = true
+clipboard_history_size = 50
+
+# 検索モードに入るためのプレフィックス。空文字 "" にするとそのモードを無効にします。
+[prefixes]
+windows = "w "      # 開いているウィンドウに切り替え
+files = "f "        # ファイル検索 (Everything が必要)
+clipboard = "cb "   # クリップボード履歴
+kill = "kill "      # プロセスを終了
+emoji = ":"         # 絵文字
 
 # --- スキャンフォルダ(任意のフォルダを検索対象に追加) ---
 # path 直下から depth 階層まで走査し、extensions の拡張子を候補に追加します。
