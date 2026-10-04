@@ -75,6 +75,142 @@ pub fn scan() -> Vec<Item> {
         items.push(item);
     }
 
+    // Control Panel items with no .cpl or Start Menu shortcut (e.g. Credential
+    // Manager): open by canonical name. The icon file doubles as an
+    // availability check, so edition-specific ones (BitLocker...) drop out.
+    // (title, match aliases, canonical name, icon "file,index" in System32)
+    const CANONICAL_TOOLS: &[(&str, &str, &str, &str)] = &[
+        (
+            "資格情報マネージャー",
+            "credential manager vault password パスワード",
+            "Microsoft.CredentialManager",
+            "Vault.dll,-1",
+        ),
+        (
+            "ユーザー アカウント",
+            "user accounts usercpl",
+            "Microsoft.UserAccounts",
+            "usercpl.dll,-1",
+        ),
+        (
+            "電源オプション",
+            "power options powercfg",
+            "Microsoft.PowerOptions",
+            "powercpl.dll,-1",
+        ),
+        (
+            "ネットワークと共有センター",
+            "network and sharing center",
+            "Microsoft.NetworkAndSharingCenter",
+            "netcenter.dll,-1",
+        ),
+        (
+            "デバイスとプリンター",
+            "devices and printers プリンタ",
+            "Microsoft.DevicesAndPrinters",
+            "DeviceCenter.dll,-1",
+        ),
+        (
+            "Windows Defender ファイアウォール",
+            "firewall ファイヤーウォール",
+            "Microsoft.WindowsFirewall",
+            "FirewallControlPanel.dll,-1",
+        ),
+        (
+            "インターネット オプション",
+            "internet options inetcpl",
+            "Microsoft.InternetOptions",
+            "inetcpl.cpl,-4487",
+        ),
+        ("サウンド", "sound mmsys audio", "Microsoft.Sound", "mmsys.cpl,-100"),
+        ("マウス", "mouse", "Microsoft.Mouse", "main.cpl,-100"),
+        ("キーボード", "keyboard", "Microsoft.Keyboard", "main.cpl,-200"),
+        (
+            "地域",
+            "region language intl 言語",
+            "Microsoft.RegionAndLanguage",
+            "intl.cpl,-200",
+        ),
+        (
+            "日付と時刻",
+            "date and time timedate 時計",
+            "Microsoft.DateAndTime",
+            "timedate.cpl,-50",
+        ),
+        ("フォント", "fonts", "Microsoft.Fonts", "fontext.dll,0"),
+        (
+            "エクスプローラーのオプション",
+            "folder options explorer フォルダー オプション",
+            "Microsoft.FolderOptions",
+            "imageres.dll,-166",
+        ),
+        (
+            "インデックスのオプション",
+            "indexing options search 検索",
+            "Microsoft.IndexingOptions",
+            "srchadmin.dll,-201",
+        ),
+        (
+            "Windows ツール",
+            "windows tools administrative tools 管理ツール",
+            "Microsoft.AdministrativeTools",
+            "imageres.dll,-114",
+        ),
+        (
+            "セキュリティとメンテナンス",
+            "security and maintenance action center",
+            "Microsoft.ActionCenter",
+            "ActionCenterCPL.dll,-1",
+        ),
+        ("回復", "recovery restore 復元ポイント", "Microsoft.Recovery", "imageres.dll,-1022"),
+        (
+            "BitLocker ドライブ暗号化",
+            "bitlocker drive encryption",
+            "Microsoft.BitLockerDriveEncryption",
+            "fvecpl.dll,-1",
+        ),
+        (
+            "ファイル履歴",
+            "file history backup",
+            "Microsoft.FileHistory",
+            "FileHistory.exe,0",
+        ),
+        (
+            "バックアップと復元 (Windows 7)",
+            "backup and restore sdclt",
+            "Microsoft.BackupAndRestore",
+            "sdcpl.dll,-1",
+        ),
+        ("記憶域", "storage spaces", "Microsoft.StorageSpaces", "SpaceControl.dll,-1"),
+        ("色の管理", "color management icc", "Microsoft.ColorManagement", "colorcpl.exe,-5"),
+        ("自動再生", "autoplay", "Microsoft.AutoPlay", "autoplay.dll,-1"),
+        (
+            "コンピューターの簡単操作センター",
+            "ease of access accessibility",
+            "Microsoft.EaseOfAccessCenter",
+            "accessibilitycpl.dll,-1",
+        ),
+    ];
+    for (title, aliases, name, icon) in CANONICAL_TOOLS {
+        let Some((icon_file, _)) = icon.split_once(',') else {
+            continue;
+        };
+        if !sys32.join(icon_file).exists() {
+            continue;
+        }
+        let mut item = Item::new(
+            *title,
+            format!("コントロール パネル ({name})"),
+            Action::Exec {
+                cmd: sys32.join("control.exe").display().to_string(),
+                args: Some(format!("/name {name}")),
+            },
+        );
+        item.icon_path = Some(sys32.join(icon).display().to_string());
+        finish(&mut item, title, aliases);
+        items.push(item);
+    }
+
     let mut env = Item::new(
         "環境変数の編集",
         "システム環境変数を編集",

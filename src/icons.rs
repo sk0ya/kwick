@@ -84,11 +84,31 @@ pub fn app_icon_rgba() -> Option<(Vec<u8>, usize, usize)> {
 }
 
 /// Ask the shell for the file's icon and convert it to RGBA pixels.
+/// `path` may also be an icon resource location like `C:\x\Vault.dll,-1`
+/// (the registry's DefaultIcon format; negative = resource id).
 fn extract_rgba(path: &str) -> Option<(Vec<u8>, usize, usize)> {
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
-    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
-    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+    use windows::Win32::UI::Shell::{
+        SHDefExtractIconW, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
+
+    if let Some((file, index)) = parse_icon_location(path) {
+        let wide: Vec<u16> = file.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut hicon = HICON::default();
+        unsafe {
+            // Unlike ExtractIconExW this follows MUI redirection (Vault.dll...).
+            let res =
+                SHDefExtractIconW(PCWSTR(wide.as_ptr()), index, 0, Some(&mut hicon), None, 32);
+            if res.is_err() || hicon.is_invalid() {
+                return None;
+            }
+            let rgba = icon_to_rgba(hicon);
+            let _ = DestroyIcon(hicon);
+            return rgba;
+        }
+    }
 
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let mut info = SHFILEINFOW::default();
@@ -107,6 +127,15 @@ fn extract_rgba(path: &str) -> Option<(Vec<u8>, usize, usize)> {
         let _ = DestroyIcon(info.hIcon);
         rgba
     }
+}
+
+/// Split `file,index` when `file` exists; plain paths return None.
+fn parse_icon_location(path: &str) -> Option<(&str, i32)> {
+    let (file, index) = path.rsplit_once(',')?;
+    let index = index.trim().parse().ok()?;
+    std::path::Path::new(file)
+        .is_file()
+        .then_some((file, index))
 }
 
 unsafe fn icon_to_rgba(
@@ -206,4 +235,19 @@ unsafe fn icon_to_rgba(
     let _ = DeleteObject(hbm_color.into());
     let _ = DeleteObject(hbm_mask.into());
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_icon_from_resource_location() {
+        let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+        let path = format!(r"{windir}\System32\Vault.dll,-1");
+        assert!(parse_icon_location(&path).is_some());
+        assert!(extract_rgba(&path).is_some());
+        assert!(parse_icon_location(r"C:\no\such.dll,-1").is_none());
+        assert!(parse_icon_location(&format!(r"{windir}\notepad.exe")).is_none());
+    }
 }
