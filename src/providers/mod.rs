@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod convert;
+pub mod emoji;
 pub mod folders;
 pub mod pathbin;
 pub mod pathnav;
@@ -55,6 +56,10 @@ pub enum Action {
     ClearClipboardHistory,
     /// Volume, recycle bin...
     System(sysops::SysOp),
+    /// Open a plugin's sub-list (index into the Lua host's page list)
+    LuaPage(usize),
+    /// A Lua callback that leaves the launcher open (`keep_open = true`)
+    LuaKeep(usize),
 }
 
 /// Keyboard shortcut bound to an entry of the action panel.

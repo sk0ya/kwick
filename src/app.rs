@@ -56,6 +56,8 @@ pub struct KwickApp {
     /// the name part changes.
     dir_cache: Option<(std::path::PathBuf, Vec<Item>)>,
     preview: Option<crate::preview::Preview>,
+    /// Plugin sub-lists entered with Enter (title, items); the last is shown.
+    pages: Vec<(String, Vec<Item>)>,
     /// Started on the first file search.
     everything: Option<crate::everything::Everything>,
     files_answer: Option<crate::everything::Answer>,
@@ -631,7 +633,7 @@ impl KwickApp {
         let config_item_count = config_items.len();
         indexed.extend(config_items);
 
-        let lua = LuaHost::new(&config::plugin_dir(), cc.egui_ctx.clone());
+        let lua = LuaHost::new(&config::plugin_dir(), cc.egui_ctx.clone(), &config.plugins);
         let reload_stamp = reload_stamp();
         let clip_history = crate::clipboard::ClipHistory::default();
         clip_history.configure(config.clipboard_history, config.clipboard_history_size);
@@ -656,6 +658,7 @@ impl KwickApp {
             rates_pending: false,
             dir_cache: None,
             preview: None,
+            pages: Vec::new(),
             everything: None,
             files_answer: None,
             files_waiting: false,
@@ -725,6 +728,7 @@ impl KwickApp {
         self.args_prompt = None;
         self.dir_cache = None;
         self.files_answer = None;
+        self.pages.clear();
         self.had_focus = false;
         self.ime_composing = false;
         self.needs_search = true; // populate the most-used view
@@ -762,7 +766,8 @@ impl KwickApp {
         } else {
             self.refresh_config_items();
         }
-        self.lua = LuaHost::new(&config::plugin_dir(), ctx.clone());
+        self.lua = LuaHost::new(&config::plugin_dir(), ctx.clone(), &self.config.plugins);
+        self.pages.clear();
         self.reload_stamp = stamp;
     }
 
@@ -1089,6 +1094,12 @@ impl KwickApp {
         if self.args_prompt.is_some() {
             return;
         }
+        // Inside a plugin's sub-list, the query filters that list.
+        if let Some((_, items)) = self.pages.last() {
+            let items = items.clone();
+            self.show_filtered(items, &query);
+            return;
+        }
         if query.is_empty() {
             // Empty query: pinned items, then the most-used ones.
             let mut used: Vec<&Item> = self
@@ -1145,6 +1156,27 @@ impl KwickApp {
         if let Some(rest) = mode_rest(&raw, &prefixes.files) {
             let rest = rest.trim().to_string();
             self.search_files(&rest);
+            return;
+        }
+        // The IME may type the full-width "：".
+        let emoji_raw = raw.replacen('：', ":", 1);
+        if let Some(rest) = mode_rest(&emoji_raw, &prefixes.emoji) {
+            let all = providers::emoji::items();
+            let rest = rest.trim();
+            self.results = if rest.is_empty() {
+                all.iter().take(50).cloned().collect()
+            } else {
+                // Keyword lists are long, so scattered fuzzy hits are common;
+                // a real substring match ("cat" in "grinning cat") wins.
+                let needle = crate::reading::to_hiragana(&rest.to_lowercase());
+                self.ranker
+                    .rank(all, rest, 50, |it| {
+                        Some(if it.key.to_lowercase().contains(&needle) { 1000 } else { 0 })
+                    })
+                    .into_iter()
+                    .map(|i| all[i].clone())
+                    .collect()
+            };
             return;
         }
         if let Some(rest) = mode_rest(&raw, &prefixes.clipboard) {
@@ -1417,6 +1449,19 @@ impl KwickApp {
                 self.needs_search = true;
                 return;
             }
+            Action::LuaKeep(idx) => {
+                self.lua.run(*idx);
+                self.needs_search = true;
+                return;
+            }
+            Action::LuaPage(idx) => {
+                if let Some(page) = self.lua.open_page(*idx) {
+                    self.pages.push(page);
+                    self.query.clear();
+                    self.needs_search = true;
+                }
+                return;
+            }
             _ => {}
         }
         if matches!(
@@ -1447,6 +1492,8 @@ impl KwickApp {
             Action::Paste(text) => crate::clipboard::paste(&text, self.ctl.previous()),
             Action::System(op) => providers::sysops::run(op),
             Action::Quit
+            | Action::LuaPage(_)
+            | Action::LuaKeep(_)
             | Action::ClearClipboardHistory
             | Action::SetQuery(_)
             | Action::CloseWindow(_)
@@ -1613,6 +1660,10 @@ fn take_keys(input: &mut egui::InputState, query_empty: bool, text_selected: boo
 impl eframe::App for KwickApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_rescan();
+        // Plugin HTTP responses; a plugin may ask for its results again.
+        if self.lua.poll() {
+            self.needs_search = true;
+        }
         if self.files_waiting {
             if let Some(answer) = self.everything.as_ref().and_then(|e| e.poll()) {
                 self.files_answer = Some(answer);
@@ -1707,7 +1758,12 @@ impl eframe::App for KwickApp {
                 self.submit_args(ctx);
             }
         } else {
-            if keys.esc {
+            // Esc / Backspace in an empty box leave a plugin's sub-list.
+            if (keys.esc || keys.back) && !self.pages.is_empty() {
+                self.pages.pop();
+                self.query.clear();
+                self.needs_search = true;
+            } else if keys.esc {
                 self.hide_window();
                 return;
             }
@@ -1759,6 +1815,14 @@ impl eframe::App for KwickApp {
         let mut menu_action: Option<(Item, Action)> = None;
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if !self.pages.is_empty() {
+                let trail: Vec<&str> = self.pages.iter().map(|(t, _)| t.as_str()).collect();
+                ui.label(
+                    egui::RichText::new(format!("{}  (Esc で戻る)", trail.join(" › ")))
+                        .weak()
+                        .size(11.0),
+                );
+            }
             if let Some(prompt) = &self.args_prompt {
                 ui.label(
                     egui::RichText::new(format!(

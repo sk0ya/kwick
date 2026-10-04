@@ -28,6 +28,8 @@ pub struct Config {
     pub clipboard_history_size: usize,
     /// Preview pane next to the results (toggled with Ctrl+P).
     pub preview: bool,
+    /// Per-plugin settings: [plugins.<name>], read with kwick.settings(name).
+    pub plugins: toml::Table,
 }
 
 /// What to type first to enter each search mode. An empty string turns the
@@ -90,6 +92,7 @@ impl Default for Config {
             clipboard_history: true,
             clipboard_history_size: 50,
             preview: false,
+            plugins: toml::Table::new(),
         }
     }
 }
@@ -401,6 +404,94 @@ kwick.register{
 }
 "#;
 
+const CLAUDE_PLUGIN: &str = r#"-- Claude に質問するプラグイン(サンプル)
+-- 「? 質問」と入力して Enter。回答はこの場に表示され、Enter でコピーできます。
+-- API キーは config.toml に書くか、環境変数 ANTHROPIC_API_KEY で渡します:
+--   [plugins.claude]
+--   api_key = "sk-ant-..."
+--   model = "claude-opus-5-5"   -- 省略可
+--   effort = "low"              -- low / medium / high (省略時 low: 素早い短答向け)
+-- 質問は Enter を押したときだけ送信します(入力中には送りません)。
+
+local answers, pending = {}, {}
+
+local function settings()
+  local s = kwick.settings("claude")
+  return s.api_key or os.getenv("ANTHROPIC_API_KEY"), s.model or "claude-opus-5-5", s.effort or "low"
+end
+
+local function ask(question)
+  local key, model, effort = settings()
+  pending[question] = true
+  local body = kwick.json_encode({
+    model = model,
+    max_tokens = 16000,
+    output_config = { effort = effort },
+    -- 安全分類器が断った場合はサーバー側で別モデルに切り替える
+    fallbacks = "default",
+    system = "あなたはコマンドランチャーから呼ばれるアシスタントです。簡潔に、要点だけを日本語で答えてください。",
+    messages = { { role = "user", content = question } },
+  })
+  kwick.http({
+    url = "https://api.anthropic.com/v1/messages",
+    method = "POST",
+    headers = {
+      ["content-type"] = "application/json",
+      ["x-api-key"] = key,
+      ["anthropic-version"] = "2023-06-01",
+      ["anthropic-beta"] = "server-side-fallback-2026-07-01",
+    },
+    body = body,
+  }, function(res)
+    pending[question] = nil
+    local data = res.body and kwick.json_decode(res.body)
+    if not res.ok then
+      local msg = res.error or (data and data.error and data.error.message) or ("HTTP " .. tostring(res.status))
+      answers[question] = { error = msg }
+    elseif data.stop_reason == "refusal" then
+      answers[question] = { error = "回答が拒否されました" }
+    else
+      local parts = {}
+      for _, block in ipairs(data.content or {}) do
+        if block.type == "text" then parts[#parts + 1] = block.text end
+      end
+      answers[question] = { text = table.concat(parts) }
+    end
+    kwick.refresh()
+  end)
+end
+
+kwick.register{
+  name = "claude",
+  on_query = function(q)
+    local question = q:match("^[?？]%s*(.+)$")
+    if not question then return {} end
+    local key = settings()
+    if not key or key == "" then
+      return { { title = "Claude の API キーが未設定です",
+                 subtitle = "config.toml の [plugins.claude] api_key か環境変数 ANTHROPIC_API_KEY",
+                 copy = "[plugins.claude]\napi_key = \"\"" } }
+    end
+    local a = answers[question]
+    if a and a.error then
+      return { { title = "エラー: " .. a.error, subtitle = "Enter でもう一度質問",
+                 keep_open = true, run = function() answers[question] = nil; ask(question) end } }
+    elseif a then
+      local items = { { title = (a.text:match("[^\n]+") or a.text), subtitle = "Enter で回答全体をコピー (Ctrl+P でプレビュー)", copy = a.text } }
+      for line in a.text:gmatch("[^\n]+") do
+        if #items >= 12 then break end
+        if line ~= items[1].title then items[#items + 1] = { title = line, subtitle = "Enter でこの行をコピー", copy = line } end
+      end
+      return items
+    elseif pending[question] then
+      return { { title = "Claude が考えています…", subtitle = question, copy = question } }
+    end
+    return { { title = "Claude に質問: " .. question, subtitle = "Enter で送信",
+               keep_open = true, run = function() ask(question) end } }
+  end,
+}
+"#;
+
 fn ensure_default_files() {
     let dir = config_dir();
     let plugins = plugin_dir();
@@ -409,9 +500,11 @@ fn ensure_default_files() {
     if !cfg.exists() {
         let _ = std::fs::write(&cfg, DEFAULT_CONFIG);
     }
-    let calc = plugins.join("calc.lua");
-    if !calc.exists() {
-        let _ = std::fs::write(&calc, CALC_PLUGIN);
+    for (name, code) in [("calc.lua", CALC_PLUGIN), ("claude.lua", CLAUDE_PLUGIN)] {
+        let path = plugins.join(name);
+        if !path.exists() {
+            let _ = std::fs::write(&path, code);
+        }
     }
 }
 
