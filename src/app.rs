@@ -46,6 +46,8 @@ pub struct KwickApp {
     args_prompt: Option<ArgsPrompt>,
     /// Result to run right away: its `instant` keyword was typed.
     instant_pending: Option<usize>,
+    /// The query was replaced programmatically; put the cursor at its end.
+    cursor_to_end: bool,
 
     view: View,
     /// Hotkey text being edited in the settings view (applied on lost focus).
@@ -633,6 +635,7 @@ impl KwickApp {
             panel: None,
             args_prompt: None,
             instant_pending: None,
+            cursor_to_end: false,
             view: View::Search,
             ext_drafts: Vec::new(),
             startup_enabled: crate::startup::is_enabled(),
@@ -1045,6 +1048,20 @@ impl KwickApp {
             return;
         }
 
+        // Search modes entered by a prefix ("w " windows, "kill " ...).
+        let raw = self.query.trim_start().to_string();
+        let prefixes = self.config.prefixes.clone();
+        if let Some(rest) = mode_rest(&raw, &prefixes.windows) {
+            let items = providers::winlist::list(self.ctl.raw_hwnd());
+            self.show_filtered(items, rest);
+            return;
+        }
+        if let Some(rest) = mode_rest(&raw, &prefixes.kill) {
+            let items = providers::winlist::processes();
+            self.show_filtered(items, rest);
+            return;
+        }
+
         // Web searches: "keyword rest-of-query"
         for ws in &self.config.web_searches {
             if ws.keyword.is_empty() || !ws.url.contains("{query}") {
@@ -1120,6 +1137,20 @@ impl KwickApp {
         self.instant_pending = instant;
     }
 
+    /// Results of a search mode: everything in order for an empty query,
+    /// otherwise fuzzy-ranked.
+    fn show_filtered(&mut self, mut items: Vec<Item>, query: &str) {
+        const MODE_MAX: usize = 50;
+        crate::reading::annotate_kana(&mut items);
+        let query = query.trim();
+        if query.is_empty() {
+            self.results = items.into_iter().take(MODE_MAX).collect();
+            return;
+        }
+        let order = self.ranker.rank(&items, query, MODE_MAX, |_| Some(0));
+        self.results = order.into_iter().map(|i| items[i].clone()).collect();
+    }
+
     fn actions_for(&self, item: &Item) -> Vec<SubAction> {
         item.actions(
             self.is_pinned(&item.title),
@@ -1149,6 +1180,14 @@ impl KwickApp {
         self.history.bump(&item.title);
         let query = self.query.trim().to_string();
         self.history.learn(&query, &item.title);
+    }
+
+    /// Take a result off the list (its window was closed, its process ended).
+    fn drop_result(&mut self, item: &Item) {
+        if let Some(i) = self.results.iter().position(|r| r.title == item.title) {
+            self.results.remove(i);
+            self.selected = self.selected.min(self.results.len().saturating_sub(1));
+        }
     }
 
     /// Persist a pin/hide change and refresh the list in place.
@@ -1216,6 +1255,23 @@ impl KwickApp {
                 self.selected = keep.min(self.results.len().saturating_sub(1));
                 return;
             }
+            Action::SetQuery(text) => {
+                self.remember(item);
+                self.query = text.clone();
+                self.cursor_to_end = true;
+                self.needs_search = true;
+                return;
+            }
+            Action::CloseWindow(hwnd) => {
+                providers::winlist::close(*hwnd);
+                self.drop_result(item);
+                return;
+            }
+            Action::Kill(pids) => {
+                providers::winlist::kill(pids);
+                self.drop_result(item);
+                return;
+            }
             _ => {}
         }
         if matches!(
@@ -1242,7 +1298,11 @@ impl KwickApp {
             }
             Action::RunAs { cmd, args } => launch::run_as(&cmd, args.as_deref()),
             Action::Reveal(path) => launch::reveal(&path),
+            Action::Focus(hwnd) => providers::winlist::focus(hwnd),
             Action::Quit
+            | Action::SetQuery(_)
+            | Action::CloseWindow(_)
+            | Action::Kill(_)
             | Action::Reload
             | Action::OpenSettings
             | Action::AskArgs(_)
@@ -1266,6 +1326,16 @@ impl KwickApp {
         };
         self.perform(ctx, &prompt.item, action);
     }
+}
+
+/// The text after a mode prefix, if `query` starts with it (case-insensitive).
+fn mode_rest<'a>(query: &'a str, prefix: &str) -> Option<&'a str> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let head = query.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &query[prefix.len()..])
 }
 
 /// Keys the launcher claims before the query box sees them.
@@ -1467,6 +1537,14 @@ impl eframe::App for KwickApp {
             } else {
                 "検索…"
             };
+            if std::mem::take(&mut self.cursor_to_end) {
+                let mut state = egui::TextEdit::load_state(ctx, query_id).unwrap_or_default();
+                let end = egui::text::CCursor::new(self.query.chars().count());
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                state.store(ctx, query_id);
+            }
             let edit = egui::TextEdit::singleline(&mut self.query)
                 .id(query_id)
                 .font(egui::TextStyle::Heading)

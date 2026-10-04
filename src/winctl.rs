@@ -36,6 +36,10 @@ impl WindowCtl {
         }
     }
 
+    pub fn raw_hwnd(&self) -> isize {
+        self.hwnd.load(Ordering::SeqCst)
+    }
+
     pub fn is_visible(&self) -> bool {
         self.visible.load(Ordering::SeqCst)
     }

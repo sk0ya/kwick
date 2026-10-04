@@ -5,6 +5,7 @@ pub mod registered;
 pub mod shellfolders;
 pub mod systools;
 pub mod uwp;
+pub mod winlist;
 
 use crate::config::Config;
 
@@ -39,6 +40,13 @@ pub enum Action {
     Hide(String),
     /// Forget launch history and learned queries for this title
     Forget(String),
+    /// Bring a top-level window to the front
+    Focus(isize),
+    CloseWindow(isize),
+    /// End these processes
+    Kill(Vec<u32>),
+    /// Replace the query text (enter a mode such as "w ", complete a path)
+    SetQuery(String),
 }
 
 /// Keyboard shortcut bound to an entry of the action panel.
@@ -147,6 +155,9 @@ impl Item {
         let primary = match &self.action {
             Action::Copy(_) => "コピー",
             Action::Url(_) => "ブラウザで開く",
+            Action::Focus(_) => "このウィンドウに切り替え",
+            Action::Kill(_) => "プロセスを終了",
+            Action::SetQuery(_) => "このモードで検索",
             _ => "開く",
         };
         add(primary, Some(Shortcut::Enter), self.action.clone());
@@ -222,6 +233,27 @@ pub fn config_items(config: &Config) -> Vec<Item> {
             item.alias = c.keyword.trim().to_string();
             item.instant = c.instant;
         }
+        items.push(item);
+    }
+    // Entry points to the search modes, so they can be found by name.
+    let p = &config.prefixes;
+    for (prefix, title, aliases) in [
+        (&p.windows, "ウィンドウ切り替え", "window switch switcher alt tab"),
+        (&p.files, "ファイル検索 (Everything)", "file search everything find"),
+        (&p.clipboard, "クリップボード履歴", "clipboard history paste"),
+        (&p.kill, "プロセスを終了", "kill process taskkill task end"),
+        (&p.emoji, "絵文字", "emoji 記号 symbol"),
+    ] {
+        if prefix.is_empty() {
+            continue;
+        }
+        let mut item = Item::new(
+            title,
+            format!("「{prefix}」に続けて入力"),
+            Action::SetQuery(prefix.clone()),
+        );
+        item.key = format!("{title} {aliases}");
+        item.rank_boost = 100;
         items.push(item);
     }
     // Quick links: a [[web_searches]] entry without {query} is a fixed

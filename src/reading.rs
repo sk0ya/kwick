@@ -52,6 +52,16 @@ pub fn annotate(items: &mut [Item]) {
     }
 }
 
+/// Cheap variant for short-lived results (window titles, processes): only
+/// fold the title's own katakana, without asking the IME for readings.
+pub fn annotate_kana(items: &mut [Item]) {
+    for item in items.iter_mut() {
+        if item.title.chars().any(|c| ('ァ'..='ヶ').contains(&c)) {
+            item.key = format!("{} {}", item.key, to_hiragana(&item.title));
+        }
+    }
+}
+
 /// Katakana → hiragana, other characters unchanged. Used for queries too, so
 /// "シカク" matches the hiragana reading.
 pub fn to_hiragana(s: &str) -> String {

@@ -22,6 +22,44 @@ pub struct Config {
     pub pinned: Vec<String>,
     /// Titles never shown (action panel: 候補から隠す).
     pub hidden: Vec<String>,
+    pub prefixes: Prefixes,
+}
+
+/// What to type first to enter each search mode. An empty string turns the
+/// mode off.
+#[derive(Deserialize, Clone, PartialEq)]
+#[serde(default)]
+pub struct Prefixes {
+    pub windows: String,
+    pub kill: String,
+    pub clipboard: String,
+    pub files: String,
+    pub emoji: String,
+}
+
+impl Default for Prefixes {
+    fn default() -> Self {
+        Self {
+            windows: "w ".into(),
+            kill: "kill ".into(),
+            clipboard: "cb ".into(),
+            files: "f ".into(),
+            emoji: ":".into(),
+        }
+    }
+}
+
+impl Prefixes {
+    /// (key in config.toml, label, value) for each mode, in display order.
+    pub fn entries_mut(&mut self) -> [(&'static str, &'static str, &mut String); 5] {
+        [
+            ("windows", "ウィンドウ切り替え", &mut self.windows),
+            ("files", "ファイル検索 (Everything)", &mut self.files),
+            ("clipboard", "クリップボード履歴", &mut self.clipboard),
+            ("kill", "プロセスを終了", &mut self.kill),
+            ("emoji", "絵文字", &mut self.emoji),
+        ]
+    }
 }
 
 impl Default for Config {
@@ -43,6 +81,7 @@ impl Default for Config {
             web_searches: Vec::new(),
             pinned: Vec::new(),
             hidden: Vec::new(),
+            prefixes: Prefixes::default(),
         }
     }
 }
@@ -164,6 +203,15 @@ fn apply(text: &str, config: &Config) -> Result<String, String> {
             doc.remove(key);
         } else {
             doc[key] = value(titles.iter().map(String::as_str).collect::<Array>());
+        }
+    }
+    {
+        let mut prefixes = config.prefixes.clone();
+        if !doc.contains_table("prefixes") {
+            doc["prefixes"] = toml_edit::table();
+        }
+        for (key, _, text) in prefixes.entries_mut() {
+            doc["prefixes"][key] = value(text.as_str());
         }
     }
 
