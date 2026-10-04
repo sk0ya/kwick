@@ -17,6 +17,10 @@ pub struct Config {
     pub scan_folders: Vec<ScanFolder>,
     pub commands: Vec<CustomCommand>,
     pub web_searches: Vec<WebSearch>,
+    /// Titles always ranked first when they match (action panel: 上位に固定).
+    pub pinned: Vec<String>,
+    /// Titles never shown (action panel: 候補から隠す).
+    pub hidden: Vec<String>,
 }
 
 impl Default for Config {
@@ -35,6 +39,8 @@ impl Default for Config {
             scan_folders: Vec::new(),
             commands: Vec::new(),
             web_searches: Vec::new(),
+            pinned: Vec::new(),
+            hidden: Vec::new(),
         }
     }
 }
@@ -83,7 +89,12 @@ pub struct WebSearch {
     pub url: String,
 }
 
+/// `KWICK_CONFIG_DIR` overrides the location, so a development build can run
+/// next to the resident instance with its own config and history.
 pub fn config_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("KWICK_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("kwick")
@@ -139,6 +150,13 @@ fn apply(text: &str, config: &Config) -> Result<String, String> {
     doc["scan_chocolatey"] = value(config.scan_chocolatey);
     doc["system_commands"] = value(config.system_commands);
     doc["special_folders"] = value(config.special_folders);
+    for (key, titles) in [("pinned", &config.pinned), ("hidden", &config.hidden)] {
+        if titles.is_empty() {
+            doc.remove(key);
+        } else {
+            doc[key] = value(titles.iter().map(String::as_str).collect::<Array>());
+        }
+    }
 
     let mut folders = ArrayOfTables::new();
     for folder in config

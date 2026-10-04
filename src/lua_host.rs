@@ -124,7 +124,7 @@ impl LuaHost {
                 } else {
                     continue;
                 };
-                out.push(Item::new(title, subtitle, action));
+                out.push(Item::new(title, subtitle, action).transient());
             }
         }
         out

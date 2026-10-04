@@ -5,7 +5,7 @@ use crate::icons::IconCache;
 use crate::launch::{self, shell_open};
 use crate::lua_host::LuaHost;
 use crate::matcher::Ranker;
-use crate::providers::{self, Action, Item};
+use crate::providers::{self, Action, Item, Shortcut, SubAction};
 use crate::tray::TrayFlags;
 use crate::winctl::WindowCtl;
 use eframe::egui;
@@ -40,6 +40,10 @@ pub struct KwickApp {
     results: Vec<Item>,
     selected: usize,
     needs_search: bool,
+    /// Action panel (Ctrl+K) for the selected result.
+    panel: Option<Panel>,
+    /// Shift+Enter: the query box is collecting arguments for a command.
+    args_prompt: Option<ArgsPrompt>,
 
     view: View,
     /// Hotkey text being edited in the settings view (applied on lost focus).
@@ -81,6 +85,21 @@ pub struct KwickApp {
     hotkey_manager: GlobalHotKeyManager,
     hotkey_input: HotkeyInput,
 }
+
+struct Panel {
+    item: Item,
+    actions: Vec<SubAction>,
+    selected: usize,
+}
+
+struct ArgsPrompt {
+    cmd: String,
+    item: Item,
+    /// The search query, restored when the prompt ends.
+    saved_query: String,
+}
+
+const QUERY_ID: &str = "kwick-query";
 
 /// A hotkey that is registered with the OS right now.
 struct Binding {
@@ -597,6 +616,8 @@ impl KwickApp {
             results: Vec::new(),
             selected: 0,
             needs_search: start_visible,
+            panel: None,
+            args_prompt: None,
             view: View::Search,
             ext_drafts: Vec::new(),
             startup_enabled: crate::startup::is_enabled(),
@@ -659,6 +680,8 @@ impl KwickApp {
         self.query.clear();
         self.results.clear();
         self.selected = 0;
+        self.panel = None;
+        self.args_prompt = None;
         self.had_focus = false;
         self.ime_composing = false;
         self.needs_search = true; // populate the most-used view
@@ -961,18 +984,38 @@ impl KwickApp {
         }
     }
 
+    fn is_pinned(&self, title: &str) -> bool {
+        self.config.pinned.iter().any(|t| t == title)
+    }
+
+    fn is_hidden(&self, title: &str) -> bool {
+        self.config.hidden.iter().any(|t| t == title)
+    }
+
     fn search(&mut self) {
         self.results.clear();
         self.selected = 0;
+        self.panel = None;
         let query = self.query.trim().to_string();
+        if self.args_prompt.is_some() {
+            return;
+        }
         if query.is_empty() {
-            // Empty query: show most-used items.
+            // Empty query: pinned items, then the most-used ones.
             let mut used: Vec<&Item> = self
                 .indexed
                 .iter()
-                .filter(|it| self.history.count(&it.title) > 0)
+                .filter(|it| {
+                    (self.is_pinned(&it.title) || self.history.count(&it.title) > 0)
+                        && !self.is_hidden(&it.title)
+                })
                 .collect();
-            used.sort_by_key(|it| std::cmp::Reverse(self.history.count(&it.title)));
+            used.sort_by_key(|it| {
+                (
+                    !self.is_pinned(&it.title),
+                    std::cmp::Reverse(self.history.count(&it.title)),
+                )
+            });
             self.results = used
                 .into_iter()
                 .take(self.config.max_results)
@@ -994,37 +1037,89 @@ impl KwickApp {
                 continue;
             }
             let url = ws.url.replace("{query}", &urlencoding::encode(rest));
-            self.results.push(Item::new(
-                format!("{}: {}", ws.name, rest),
-                url.clone(),
-                Action::Url(url),
-            ));
+            self.results.push(
+                Item::new(format!("{}: {}", ws.name, rest), url.clone(), Action::Url(url))
+                    .transient(),
+            );
         }
 
         // Lua plugins decide their own relevance; they go on top.
         let mut lua_items = self.lua.query(&query);
         self.results.append(&mut lua_items);
 
-        // Fuzzy-matched indexed items, boosted by launch history.
+        // Fuzzy-matched indexed items, boosted by pins, what was picked for
+        // this query before, and launch history.
         let remaining = self
             .config
             .max_results
             .saturating_sub(self.results.len().min(2));
-        let history = &self.history;
-        for idx in self.ranker.rank(&self.indexed, &query, remaining, |it| {
-            history.bonus(&it.title) + it.rank_boost
+        let learned = self.history.learned_bonuses(&query);
+        let Self {
+            config,
+            history,
+            ranker,
+            indexed,
+            results,
+            ..
+        } = self;
+        for idx in ranker.rank(indexed, &query, remaining, |it| {
+            if config.hidden.contains(&it.title) {
+                return None;
+            }
+            let pin = if config.pinned.contains(&it.title) { 2000 } else { 0 };
+            let learned = learned.get(&it.title).copied().unwrap_or(0);
+            Some(pin + learned + history.bonus(&it.title) + it.rank_boost)
         }) {
-            self.results.push(self.indexed[idx].clone());
+            results.push(indexed[idx].clone());
         }
     }
 
-    fn execute_selected(&mut self, ctx: &egui::Context) {
-        let Some(item) = self.results.get(self.selected) else {
+    fn actions_for(&self, item: &Item) -> Vec<SubAction> {
+        item.actions(
+            self.is_pinned(&item.title),
+            self.history.count(&item.title) > 0,
+        )
+    }
+
+    /// Run the selected result's action bound to `shortcut`, if it has one.
+    fn trigger(&mut self, ctx: &egui::Context, shortcut: Shortcut) {
+        let Some(item) = self.results.get(self.selected).cloned() else {
             return;
         };
-        let action = item.action.clone();
-        let title = item.title.clone();
-        match action {
+        if let Some(sub) = self
+            .actions_for(&item)
+            .into_iter()
+            .find(|a| a.shortcut == Some(shortcut))
+        {
+            self.perform(ctx, &item, sub.action);
+        }
+    }
+
+    /// Record a launch: history count plus the query it was picked for.
+    fn remember(&mut self, item: &Item) {
+        if !item.remember {
+            return;
+        }
+        self.history.bump(&item.title);
+        let query = self.query.trim().to_string();
+        self.history.learn(&query, &item.title);
+    }
+
+    /// Persist a pin/hide change and refresh the list in place.
+    fn save_lists(&mut self) {
+        if let Err(e) = config::save(&self.config) {
+            eprintln!("kwick: {e}");
+        }
+        self.reload_stamp = reload_stamp();
+        let keep = self.selected;
+        self.search();
+        self.selected = keep.min(self.results.len().saturating_sub(1));
+    }
+
+    fn perform(&mut self, ctx: &egui::Context, item: &Item, action: Action) {
+        self.panel = None;
+        // Actions that keep the launcher open.
+        match &action {
             Action::Reload => {
                 self.request_rescan();
                 self.needs_search = true;
@@ -1035,35 +1130,158 @@ impl KwickApp {
                 std::process::exit(0);
             }
             Action::OpenSettings => {
-                self.history.bump(&title);
+                self.remember(item);
                 self.open_settings(ctx);
+                return;
+            }
+            Action::AskArgs(cmd) => {
+                self.args_prompt = Some(ArgsPrompt {
+                    cmd: cmd.clone(),
+                    item: item.clone(),
+                    saved_query: std::mem::take(&mut self.query),
+                });
+                self.results.clear();
+                return;
+            }
+            Action::Pin(title) => {
+                if !self.is_pinned(title) {
+                    self.config.pinned.push(title.clone());
+                }
+                self.save_lists();
+                return;
+            }
+            Action::Unpin(title) => {
+                self.config.pinned.retain(|t| t != title);
+                self.save_lists();
+                return;
+            }
+            Action::Hide(title) => {
+                if !self.is_hidden(title) {
+                    self.config.hidden.push(title.clone());
+                }
+                self.config.pinned.retain(|t| t != title);
+                self.save_lists();
+                return;
+            }
+            Action::Forget(title) => {
+                self.history.remove(title);
+                let keep = self.selected;
+                self.search();
+                self.selected = keep.min(self.results.len().saturating_sub(1));
                 return;
             }
             _ => {}
         }
+        if matches!(
+            action,
+            Action::Open(_) | Action::Exec { .. } | Action::RunAs { .. } | Action::OpenConfig
+        ) {
+            self.remember(item);
+        }
         // Hide first so focus lands on whatever we launch.
         self.hide_window();
         match action {
-            Action::Open(path) => {
-                self.history.bump(&title);
-                shell_open(&path, None);
-            }
-            Action::Exec { cmd, args } => {
-                self.history.bump(&title);
-                shell_open(&cmd, args.as_deref());
-            }
+            Action::Open(path) => shell_open(&path, None),
+            Action::Exec { cmd, args } => shell_open(&cmd, args.as_deref()),
             Action::Url(url) => shell_open(&url, None),
             Action::OpenConfig => {
-                self.history.bump(&title);
                 let path = config::config_dir().join("config.toml");
                 launch::open_in_editor(&path.display().to_string());
             }
             Action::Lua(idx) => self.lua.run(idx),
             Action::RegisterStartup => launch::set_startup(true),
             Action::UnregisterStartup => launch::set_startup(false),
-            Action::Quit | Action::Reload | Action::OpenSettings => unreachable!(),
+            Action::Copy(text) => {
+                crate::clipboard::set_text(&text);
+            }
+            Action::RunAs { cmd, args } => launch::run_as(&cmd, args.as_deref()),
+            Action::Reveal(path) => launch::reveal(&path),
+            Action::Quit
+            | Action::Reload
+            | Action::OpenSettings
+            | Action::AskArgs(_)
+            | Action::Pin(_)
+            | Action::Unpin(_)
+            | Action::Hide(_)
+            | Action::Forget(_) => unreachable!(),
         }
     }
+
+    /// Enter in the argument prompt: run the command with what was typed.
+    fn submit_args(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = self.args_prompt.take() else {
+            return;
+        };
+        let args = self.query.trim().to_string();
+        self.query = prompt.saved_query;
+        let action = Action::Exec {
+            cmd: prompt.cmd,
+            args: (!args.is_empty()).then_some(args),
+        };
+        self.perform(ctx, &prompt.item, action);
+    }
+}
+
+/// Keys the launcher claims before the query box sees them.
+#[derive(Default)]
+struct Keys {
+    esc: bool,
+    up: bool,
+    down: bool,
+    tab: bool,
+    delete: bool,
+    /// Backspace in an empty query box.
+    back: bool,
+    action_panel: bool,
+    submit: Option<Shortcut>,
+}
+
+/// Pull navigation keys out of this frame's events. Modifiers are matched
+/// exactly (egui's `consume_key` would also take Ctrl+Enter for Enter).
+/// Ctrl+C becomes "copy path" only when no query text is selected.
+fn take_keys(input: &mut egui::InputState, query_empty: bool, text_selected: bool) -> Keys {
+    use egui::{Event, Key};
+    let mut keys = Keys::default();
+    input.events.retain(|event| {
+        if let Event::Copy = event {
+            if !text_selected {
+                keys.submit = Some(Shortcut::CtrlC);
+                return false;
+            }
+            return true;
+        }
+        let Event::Key {
+            key,
+            pressed: true,
+            modifiers: m,
+            ..
+        } = event
+        else {
+            return true;
+        };
+        let plain = m.is_none();
+        let ctrl = m.command && !m.alt;
+        match key {
+            Key::Escape if plain => keys.esc = true,
+            Key::ArrowUp if plain => keys.up = true,
+            Key::ArrowDown if plain => keys.down = true,
+            Key::Tab if plain => keys.tab = true,
+            Key::Delete if plain && query_empty => keys.delete = true,
+            Key::Backspace if plain && query_empty => keys.back = true,
+            Key::K if ctrl && !m.shift => keys.action_panel = true,
+            Key::Enter if !m.alt => {
+                keys.submit = Some(match (m.command, m.shift) {
+                    (true, true) => Shortcut::CtrlShiftEnter,
+                    (true, false) => Shortcut::CtrlEnter,
+                    (false, true) => Shortcut::ShiftEnter,
+                    (false, false) => Shortcut::Enter,
+                })
+            }
+            _ => return true,
+        }
+        false
+    });
+    keys
 }
 
 impl eframe::App for KwickApp {
@@ -1121,59 +1339,92 @@ impl eframe::App for KwickApp {
         }
 
         // Keyboard navigation (consume before TextEdit sees the keys).
-        // Delete is only claimed while the query is empty (the most-used
-        // view), so it still edits text while typing a query.
-        let history_view = self.query.trim().is_empty();
+        // Delete/Backspace are only claimed while the query is empty, so
+        // they still edit text while typing.
+        let query_empty = self.query.is_empty();
+        let history_view = self.query.trim().is_empty() && self.args_prompt.is_none();
         // While composing, the IME still lets the raw key events through, so
         // Enter (確定) would also launch the selection. Skip navigation for the
         // whole frame that carries IME events, as the key and the commit may
         // land together.
         let ime_busy = self.update_ime_state(ctx);
-        let (esc, enter, up, down, del) = ctx.input_mut(|i| {
-            if ime_busy {
-                return (false, false, false, false, false);
+        let query_id = egui::Id::new(QUERY_ID);
+        let text_selected = egui::TextEdit::load_state(ctx, query_id)
+            .and_then(|s| s.cursor.char_range())
+            .is_some_and(|r| r.primary != r.secondary);
+        let keys = if ime_busy {
+            Keys::default()
+        } else {
+            ctx.input_mut(|i| take_keys(i, query_empty, text_selected))
+        };
+
+        if self.panel.is_some() {
+            self.panel_keys(ctx, &keys);
+        } else if self.args_prompt.is_some() {
+            if keys.esc {
+                if let Some(prompt) = self.args_prompt.take() {
+                    self.query = prompt.saved_query;
+                    self.needs_search = true;
+                }
+            } else if keys.submit.is_some() {
+                self.submit_args(ctx);
             }
-            (
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-                history_view && i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
-            )
-        });
-        if esc {
-            self.hide_window();
-            return;
-        }
-        if down && !self.results.is_empty() {
-            self.selected = (self.selected + 1) % self.results.len();
-        }
-        if up && !self.results.is_empty() {
-            self.selected = (self.selected + self.results.len() - 1) % self.results.len();
-        }
-        if enter {
-            self.execute_selected(ctx);
-            if !self.ctl.is_visible() {
-                self.last_visible = false;
+        } else {
+            if keys.esc {
+                self.hide_window();
                 return;
             }
-        }
-        if del {
-            if let Some(title) = self.results.get(self.selected).map(|it| it.title.clone()) {
-                let keep = self.selected;
-                self.history.remove(&title);
-                self.search();
-                self.selected = keep.min(self.results.len().saturating_sub(1));
+            if keys.down && !self.results.is_empty() {
+                self.selected = (self.selected + 1) % self.results.len();
+            }
+            if keys.up && !self.results.is_empty() {
+                self.selected = (self.selected + self.results.len() - 1) % self.results.len();
+            }
+            if keys.action_panel {
+                self.open_panel();
+            }
+            if let Some(shortcut) = keys.submit {
+                self.trigger(ctx, shortcut);
+            }
+            if keys.delete && history_view {
+                if let Some(title) = self.results.get(self.selected).map(|it| it.title.clone()) {
+                    let keep = self.selected;
+                    self.history.remove(&title);
+                    self.search();
+                    self.selected = keep.min(self.results.len().saturating_sub(1));
+                }
             }
         }
+        if !self.ctl.is_visible() {
+            self.last_visible = false;
+            return;
+        }
 
+        let moved = keys.up || keys.down;
         let mut clicked: Option<usize> = None;
-        let mut remove_from_history: Option<String> = None;
+        let mut panel_clicked: Option<usize> = None;
+        let mut menu_action: Option<(Item, Action)> = None;
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if let Some(prompt) = &self.args_prompt {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} に渡す引数を入力して Enter (Esc で戻る)",
+                        prompt.item.title
+                    ))
+                    .weak()
+                    .size(11.0),
+                );
+            }
+            let hint = if self.args_prompt.is_some() {
+                "引数…"
+            } else {
+                "検索…"
+            };
             let edit = egui::TextEdit::singleline(&mut self.query)
+                .id(query_id)
                 .font(egui::TextStyle::Heading)
-                .hint_text("検索…")
+                .hint_text(hint)
                 .desired_width(f32::INFINITY)
                 .frame(false);
             let response = ui.add(edit);
@@ -1193,8 +1444,68 @@ impl eframe::App for KwickApp {
                 hotkey_notice,
                 lua,
                 history,
+                config,
+                panel,
                 ..
             } = self;
+
+            if let Some(panel) = panel {
+                ui.label(
+                    egui::RichText::new(format!("アクション: {}", panel.item.title))
+                        .weak()
+                        .size(11.0),
+                );
+                ui.add_space(2.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (i, sub) in panel.actions.iter().enumerate() {
+                            let fill = if i == panel.selected {
+                                ui.visuals().selection.bg_fill
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            };
+                            let response = egui::Frame::new()
+                                .fill(fill)
+                                .corner_radius(6.0)
+                                .inner_margin(egui::Margin::symmetric(8, 6))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(&sub.label).size(15.0));
+                                        if let Some(shortcut) = sub.shortcut {
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(shortcut.label())
+                                                            .weak()
+                                                            .size(11.0),
+                                                    );
+                                                },
+                                            );
+                                        }
+                                    });
+                                })
+                                .response
+                                .interact(egui::Sense::click());
+                            if i == panel.selected && moved {
+                                response.scroll_to_me(None);
+                            }
+                            if response.clicked() {
+                                panel_clicked = Some(i);
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Enter で実行 / Esc で戻る")
+                                .weak()
+                                .size(10.0),
+                        );
+                    });
+                return;
+            }
+
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -1225,9 +1536,20 @@ impl eframe::App for KwickApp {
                                     }
                                     ui.vertical(|ui| {
                                         ui.spacing_mut().item_spacing.y = 1.0;
-                                        ui.label(
-                                            egui::RichText::new(&item.title).strong().size(16.0),
-                                        );
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(&item.title)
+                                                    .strong()
+                                                    .size(16.0),
+                                            );
+                                            if config.pinned.contains(&item.title) {
+                                                ui.label(
+                                                    egui::RichText::new("固定")
+                                                        .weak()
+                                                        .size(10.0),
+                                                );
+                                            }
+                                        });
                                         ui.label(
                                             egui::RichText::new(&item.subtitle).weak().size(11.0),
                                         );
@@ -1236,29 +1558,34 @@ impl eframe::App for KwickApp {
                             })
                             .response;
                         let frame_response = frame_response.interact(egui::Sense::click());
-                        if is_selected && (up || down) {
+                        if is_selected && moved {
                             frame_response.scroll_to_me(None);
                         }
                         if frame_response.clicked() {
                             clicked = Some(i);
                         }
-                        if history.count(&item.title) > 0 {
-                            frame_response.context_menu(|ui| {
-                                if ui.button("履歴から削除").clicked() {
-                                    remove_from_history = Some(item.title.clone());
+                        frame_response.context_menu(|ui| {
+                            let actions = item.actions(
+                                config.pinned.contains(&item.title),
+                                history.count(&item.title) > 0,
+                            );
+                            for sub in actions {
+                                if ui.button(&sub.label).clicked() {
+                                    menu_action = Some((item.clone(), sub.action));
                                     ui.close();
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
 
-                    if history_view && !results.is_empty() {
+                    if !results.is_empty() {
                         ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("Del または右クリックで履歴から削除")
-                                .weak()
-                                .size(10.0),
-                        );
+                        let text = if history_view {
+                            "Ctrl+K でアクション / Del で履歴から削除"
+                        } else {
+                            "Ctrl+K でアクション"
+                        };
+                        ui.label(egui::RichText::new(text).weak().size(10.0));
                     }
 
                     if let Some(notice) = hotkey_notice.as_deref() {
@@ -1283,17 +1610,69 @@ impl eframe::App for KwickApp {
                 });
         });
 
-        if let Some(i) = clicked {
-            self.selected = i;
-            self.execute_selected(ctx);
-        }
-        if let Some(title) = remove_from_history {
-            let keep = self.selected;
-            self.history.remove(&title);
-            if history_view {
-                self.search();
-                self.selected = keep.min(self.results.len().saturating_sub(1));
+        if let Some(i) = panel_clicked {
+            if let Some(panel) = self.panel.as_mut() {
+                panel.selected = i;
             }
+            self.run_panel_selection(ctx);
+        } else if let Some(i) = clicked {
+            self.selected = i;
+            self.trigger(ctx, Shortcut::Enter);
+        } else if let Some((item, action)) = menu_action {
+            self.perform(ctx, &item, action);
+        }
+        if !self.ctl.is_visible() {
+            self.last_visible = false;
+        }
+    }
+}
+
+impl KwickApp {
+    fn open_panel(&mut self) {
+        let Some(item) = self.results.get(self.selected).cloned() else {
+            return;
+        };
+        let actions = self.actions_for(&item);
+        self.panel = Some(Panel {
+            item,
+            actions,
+            selected: 0,
+        });
+    }
+
+    fn panel_keys(&mut self, ctx: &egui::Context, keys: &Keys) {
+        let Some(panel) = self.panel.as_mut() else {
+            return;
+        };
+        if keys.esc || keys.action_panel || keys.back {
+            self.panel = None;
+            return;
+        }
+        let n = panel.actions.len();
+        if keys.down && n > 0 {
+            panel.selected = (panel.selected + 1) % n;
+        }
+        if keys.up && n > 0 {
+            panel.selected = (panel.selected + n - 1) % n;
+        }
+        match keys.submit {
+            Some(Shortcut::Enter) => self.run_panel_selection(ctx),
+            Some(shortcut) => {
+                if let Some(i) = panel.actions.iter().position(|a| a.shortcut == Some(shortcut)) {
+                    panel.selected = i;
+                    self.run_panel_selection(ctx);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn run_panel_selection(&mut self, ctx: &egui::Context) {
+        let Some(panel) = self.panel.take() else {
+            return;
+        };
+        if let Some(sub) = panel.actions.get(panel.selected) {
+            self.perform(ctx, &panel.item, sub.action.clone());
         }
     }
 }

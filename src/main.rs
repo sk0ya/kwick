@@ -6,6 +6,7 @@
 use eframe::egui;
 
 mod app;
+mod clipboard;
 mod config;
 mod fonts;
 mod history;
@@ -26,9 +27,15 @@ fn already_running() -> bool {
     use windows::core::w;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
+    // A separate config dir (KWICK_CONFIG_DIR) is a separate instance.
+    let name = if std::env::var_os("KWICK_CONFIG_DIR").is_some() {
+        w!("Kwick-SingleInstance-Dev")
+    } else {
+        w!("Kwick-SingleInstance")
+    };
     unsafe {
         // Leak the handle on purpose: it must live as long as the process.
-        let _ = CreateMutexW(None, false, w!("Kwick-SingleInstance"));
+        let _ = CreateMutexW(None, false, name);
         GetLastError() == ERROR_ALREADY_EXISTS
     }
 }

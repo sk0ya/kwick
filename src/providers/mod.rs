@@ -23,6 +23,51 @@ pub enum Action {
     Reload,
     RegisterStartup,
     UnregisterStartup,
+    /// Put text on the clipboard
+    Copy(String),
+    /// Run elevated (ShellExecute "runas")
+    RunAs { cmd: String, args: Option<String> },
+    /// Show the file selected in Explorer (shortcuts: their target)
+    Reveal(String),
+    /// Prompt for arguments, then run `cmd` with them
+    AskArgs(String),
+    /// Always rank this title first when it matches
+    Pin(String),
+    Unpin(String),
+    /// Drop this title from the results for good
+    Hide(String),
+    /// Forget launch history and learned queries for this title
+    Forget(String),
+}
+
+/// Keyboard shortcut bound to an entry of the action panel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shortcut {
+    Enter,
+    CtrlEnter,
+    ShiftEnter,
+    CtrlShiftEnter,
+    CtrlC,
+}
+
+impl Shortcut {
+    pub fn label(self) -> &'static str {
+        match self {
+            Shortcut::Enter => "Enter",
+            Shortcut::CtrlEnter => "Ctrl+Enter",
+            Shortcut::ShiftEnter => "Shift+Enter",
+            Shortcut::CtrlShiftEnter => "Ctrl+Shift+Enter",
+            Shortcut::CtrlC => "Ctrl+C",
+        }
+    }
+}
+
+/// One entry of an item's action panel (Ctrl+K / right click).
+#[derive(Clone)]
+pub struct SubAction {
+    pub label: String,
+    pub shortcut: Option<Shortcut>,
+    pub action: Action,
 }
 
 #[derive(Clone)]
@@ -36,6 +81,11 @@ pub struct Item {
     pub icon_path: Option<String>,
     /// Added to the fuzzy score so e.g. Start Menu apps outrank raw PATH exes
     pub rank_boost: u32,
+    /// Extra entries for the action panel, after the built-in ones.
+    pub extra: Vec<(String, Action)>,
+    /// Launches are recorded in the history (and learned for the query).
+    /// Off for one-off results such as calculator answers or web searches.
+    pub remember: bool,
 }
 
 impl Item {
@@ -53,7 +103,93 @@ impl Item {
             action,
             icon_path,
             rank_boost: 0,
+            extra: Vec::new(),
+            remember: true,
         }
+    }
+
+    /// A transient result (calculator answer, web search...): not recorded
+    /// in the history.
+    pub fn transient(mut self) -> Self {
+        self.remember = false;
+        self
+    }
+
+    /// The file this item launches, when it is one (for "open location",
+    /// "copy path", "run as administrator").
+    pub fn file_path(&self) -> Option<&str> {
+        let path = match &self.action {
+            Action::Open(p) => p.as_str(),
+            Action::Exec { cmd, .. } => cmd.as_str(),
+            _ => return None,
+        };
+        let p = std::path::Path::new(path);
+        (p.is_absolute() && p.exists()).then_some(path)
+    }
+
+    /// The entries of this item's action panel, the default action first.
+    pub fn actions(&self, pinned: bool, in_history: bool) -> Vec<SubAction> {
+        let mut out = Vec::new();
+        let mut add = |label: &str, shortcut: Option<Shortcut>, action: Action| {
+            out.push(SubAction {
+                label: label.to_string(),
+                shortcut,
+                action,
+            });
+        };
+        let primary = match &self.action {
+            Action::Copy(_) => "コピー",
+            Action::Url(_) => "ブラウザで開く",
+            _ => "開く",
+        };
+        add(primary, Some(Shortcut::Enter), self.action.clone());
+
+        let file = self.file_path().map(str::to_string);
+        let is_dir = file
+            .as_deref()
+            .is_some_and(|f| std::path::Path::new(f).is_dir());
+        let launchable = match &self.action {
+            Action::Exec { .. } => true,
+            Action::Open(_) => file.is_some() && !is_dir,
+            _ => false,
+        };
+        if launchable {
+            let (cmd, args) = match &self.action {
+                Action::Exec { cmd, args } => (cmd.clone(), args.clone()),
+                Action::Open(path) => (path.clone(), None),
+                _ => unreachable!(),
+            };
+            add(
+                "管理者として実行",
+                Some(Shortcut::CtrlShiftEnter),
+                Action::RunAs {
+                    cmd: cmd.clone(),
+                    args,
+                },
+            );
+            add("引数を指定して実行", Some(Shortcut::ShiftEnter), Action::AskArgs(cmd));
+        }
+        if let Some(file) = &file {
+            add("ファイルの場所を開く", Some(Shortcut::CtrlEnter), Action::Reveal(file.clone()));
+            add("パスをコピー", Some(Shortcut::CtrlC), Action::Copy(file.clone()));
+        } else if let Action::Url(url) = &self.action {
+            add("URL をコピー", Some(Shortcut::CtrlC), Action::Copy(url.clone()));
+        }
+        for (label, action) in &self.extra {
+            add(label, None, action.clone());
+        }
+        if self.remember {
+            if pinned {
+                add("固定を解除", None, Action::Unpin(self.title.clone()));
+            } else {
+                add("上位に固定", None, Action::Pin(self.title.clone()));
+            }
+            add("候補から隠す", None, Action::Hide(self.title.clone()));
+            if in_history {
+                add("履歴から削除", None, Action::Forget(self.title.clone()));
+            }
+        }
+        out
     }
 }
 

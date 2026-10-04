@@ -14,13 +14,14 @@ impl Ranker {
     }
 
     /// Returns indices into `items`, best match first, at most `max`.
-    /// `bonus` adds an extra per-item score (e.g. launch-count history).
+    /// `bonus` adds an extra per-item score (e.g. launch-count history);
+    /// returning None leaves the item out (hidden items).
     pub fn rank(
         &mut self,
         items: &[Item],
         query: &str,
         max: usize,
-        bonus: impl Fn(&Item) -> u32,
+        bonus: impl Fn(&Item) -> Option<u32>,
     ) -> Vec<usize> {
         // Keys carry hiragana readings, so a katakana query still matches.
         let query = crate::reading::to_hiragana(query);
@@ -28,9 +29,10 @@ impl Ranker {
         let mut buf = Vec::new();
         let mut scored: Vec<(u32, usize)> = Vec::new();
         for (i, item) in items.iter().enumerate() {
+            let Some(extra) = bonus(item) else { continue };
             let hay = Utf32Str::new(&item.key, &mut buf);
             if let Some(score) = pattern.score(hay, &mut self.matcher) {
-                scored.push((score + bonus(item), i));
+                scored.push((score + extra, i));
             }
         }
         scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
