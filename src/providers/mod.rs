@@ -87,6 +87,10 @@ pub struct Item {
     /// Launches are recorded in the history (and learned for the query).
     /// Off for one-off results such as calculator answers or web searches.
     pub remember: bool,
+    /// Keyword that, typed exactly, puts this item first.
+    pub alias: String,
+    /// Run as soon as the alias is typed, without Enter (opt-in per command).
+    pub instant: bool,
 }
 
 impl Item {
@@ -106,6 +110,8 @@ impl Item {
             rank_boost: 0,
             extra: Vec::new(),
             remember: true,
+            alias: String::new(),
+            instant: false,
         }
     }
 
@@ -213,6 +219,28 @@ pub fn config_items(config: &Config) -> Vec<Item> {
         );
         if !c.keyword.trim().is_empty() {
             item.key = format!("{} {}", item.title, c.keyword);
+            item.alias = c.keyword.trim().to_string();
+            item.instant = c.instant;
+        }
+        items.push(item);
+    }
+    // Quick links: a [[web_searches]] entry without {query} is a fixed
+    // target (URL, folder, file) opened by its name or keyword.
+    for w in config
+        .web_searches
+        .iter()
+        .filter(|w| !w.url.contains("{query}") && !w.url.trim().is_empty())
+    {
+        let target = w.url.trim().to_string();
+        let mut item = Item::new(w.name.clone(), target.clone(), Action::Open(target.clone()));
+        if !target.contains("://") {
+            item.icon_path = Some(target);
+        } else {
+            item.icon_path = None;
+        }
+        if !w.keyword.trim().is_empty() {
+            item.key = format!("{} {}", item.title, w.keyword);
+            item.alias = w.keyword.trim().to_string();
         }
         items.push(item);
     }

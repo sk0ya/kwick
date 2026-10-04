@@ -44,6 +44,8 @@ pub struct KwickApp {
     panel: Option<Panel>,
     /// Shift+Enter: the query box is collecting arguments for a command.
     args_prompt: Option<ArgsPrompt>,
+    /// Result to run right away: its `instant` keyword was typed.
+    instant_pending: Option<usize>,
 
     view: View,
     /// Hotkey text being edited in the settings view (applied on lost focus).
@@ -473,6 +475,12 @@ fn commands_ui(ui: &mut egui::Ui, config: &mut Config, edits: &mut Edits) {
                     ),
                     false,
                 );
+                ui.add_space(8.0);
+                edits.toggle(
+                    &ui.checkbox(&mut command.instant, "即実行")
+                        .on_hover_text("キーワードを打ち終えた時点で Enter なしで実行します"),
+                    false,
+                );
             });
         }) {
             remove = Some(i);
@@ -487,8 +495,9 @@ fn commands_ui(ui: &mut egui::Ui, config: &mut Config, edits: &mut Edits) {
 fn web_searches_ui(ui: &mut egui::Ui, config: &mut Config, edits: &mut Edits) {
     if list_section(
         ui,
-        "Web 検索",
-        "「キーワード + スペース + 検索語」で検索します。URL の {query} が検索語に置き換わります",
+        "Web 検索 / クイックリンク",
+        "「キーワード + スペース + 検索語」で検索します。URL の {query} が検索語に置き換わります。\
+         {query} を含まない URL・フォルダ・ファイルは名前かキーワードで開くリンクになります",
         "+ 検索を追加",
     ) {
         config.web_searches.push(config::WebSearch::default());
@@ -574,6 +583,7 @@ impl KwickApp {
         }
 
         let ctl = Arc::new(WindowCtl::new(win32_hwnd(cc), start_visible));
+        crate::instance::listen_show(ctl.clone(), cc.egui_ctx.clone());
         let hotkey_input = HotkeyInput::new(
             cc.egui_ctx.clone(),
             ctl.clone(),
@@ -622,6 +632,7 @@ impl KwickApp {
             needs_search: start_visible,
             panel: None,
             args_prompt: None,
+            instant_pending: None,
             view: View::Search,
             ext_drafts: Vec::new(),
             startup_enabled: crate::startup::is_enabled(),
@@ -1005,6 +1016,7 @@ impl KwickApp {
         self.results.clear();
         self.selected = 0;
         self.panel = None;
+        self.instant_pending = None;
         let query = self.query.trim().to_string();
         if self.args_prompt.is_some() {
             return;
@@ -1035,6 +1047,9 @@ impl KwickApp {
 
         // Web searches: "keyword rest-of-query"
         for ws in &self.config.web_searches {
+            if ws.keyword.is_empty() || !ws.url.contains("{query}") {
+                continue; // quick link: an indexed item instead
+            }
             let Some(rest) = query.strip_prefix(&ws.keyword) else {
                 continue;
             };
@@ -1045,10 +1060,21 @@ impl KwickApp {
             if rest.is_empty() {
                 continue;
             }
-            let url = ws.url.replace("{query}", &urlencoding::encode(rest));
+            // URLs get the query percent-encoded; a path or command line
+            // template ("C:\Notes\{query}.md") gets it verbatim.
+            let is_url = ws.url.starts_with("http://") || ws.url.starts_with("https://");
+            let target = if is_url {
+                ws.url.replace("{query}", &urlencoding::encode(rest))
+            } else {
+                ws.url.replace("{query}", rest)
+            };
+            let action = if is_url {
+                Action::Url(target.clone())
+            } else {
+                Action::Open(target.clone())
+            };
             self.results.push(
-                Item::new(format!("{}: {}", ws.name, rest), url.clone(), Action::Url(url))
-                    .transient(),
+                Item::new(format!("{}: {}", ws.name, rest), target, action).transient(),
             );
         }
 
@@ -1077,10 +1103,21 @@ impl KwickApp {
             }
             let pin = if config.pinned.contains(&it.title) { 2000 } else { 0 };
             let learned = learned.get(&it.title).copied().unwrap_or(0);
-            Some(pin + learned + history.bonus(&it.title) + it.rank_boost)
+            let alias = if !it.alias.is_empty() && it.alias.eq_ignore_ascii_case(&query) {
+                5000
+            } else {
+                0
+            };
+            Some(alias + pin + learned + history.bonus(&it.title) + it.rank_boost)
         }) {
             results.push(indexed[idx].clone());
         }
+
+        // An exact keyword marked `instant` runs without Enter.
+        let instant = results
+            .iter()
+            .position(|it| it.instant && it.alias.eq_ignore_ascii_case(&query));
+        self.instant_pending = instant;
     }
 
     fn actions_for(&self, item: &Item) -> Vec<SubAction> {
@@ -1619,7 +1656,10 @@ impl eframe::App for KwickApp {
                 });
         });
 
-        if let Some(i) = panel_clicked {
+        if let Some(i) = self.instant_pending.take() {
+            self.selected = i;
+            self.trigger(ctx, Shortcut::Enter);
+        } else if let Some(i) = panel_clicked {
             if let Some(panel) = self.panel.as_mut() {
                 panel.selected = i;
             }

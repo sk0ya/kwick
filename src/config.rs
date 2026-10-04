@@ -82,11 +82,17 @@ pub struct CustomCommand {
     pub args: String,
     #[serde(default)]
     pub keyword: String,
+    /// Run as soon as `keyword` is typed exactly, without Enter.
+    #[serde(default)]
+    pub instant: bool,
 }
 
+/// A web search ("keyword query", url with {query}) or, without {query}, a
+/// quick link: a fixed URL/folder/file opened by name or keyword.
 #[derive(Deserialize, Clone, Default)]
 pub struct WebSearch {
     pub name: String,
+    #[serde(default)]
     pub keyword: String,
     pub url: String,
 }
@@ -191,19 +197,22 @@ fn apply(text: &str, config: &Config) -> Result<String, String> {
                 table[key] = value(text.trim());
             }
         }
+        if command.instant {
+            table["instant"] = value(true);
+        }
         commands.push(table);
     }
     set_tables(&mut doc, "commands", commands);
 
     let mut searches = ArrayOfTables::new();
-    for search in config
-        .web_searches
-        .iter()
-        .filter(|w| !w.keyword.trim().is_empty())
-    {
+    for search in config.web_searches.iter().filter(|w| {
+        !w.url.trim().is_empty() && !(w.keyword.trim().is_empty() && w.name.trim().is_empty())
+    }) {
         let mut table = Table::new();
         table["name"] = value(search.name.trim());
-        table["keyword"] = value(search.keyword.trim());
+        if !search.keyword.trim().is_empty() {
+            table["keyword"] = value(search.keyword.trim());
+        }
         table["url"] = value(search.url.trim());
         searches.push(table);
     }

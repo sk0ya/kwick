@@ -12,6 +12,7 @@ mod fonts;
 mod history;
 mod hotkey;
 mod icons;
+mod instance;
 mod launch;
 mod lua_host;
 mod matcher;
@@ -21,42 +22,29 @@ mod startup;
 mod tray;
 mod winctl;
 
-/// A second resident instance would silently fight over the global hotkey,
-/// so refuse to start if one is already running.
-fn already_running() -> bool {
-    use windows::core::w;
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows::Win32::System::Threading::CreateMutexW;
-    // A separate config dir (KWICK_CONFIG_DIR) is a separate instance.
-    let name = if std::env::var_os("KWICK_CONFIG_DIR").is_some() {
-        w!("Kwick-SingleInstance-Dev")
-    } else {
-        w!("Kwick-SingleInstance")
-    };
-    unsafe {
-        // Leak the handle on purpose: it must live as long as the process.
-        let _ = CreateMutexW(None, false, name);
-        GetLastError() == ERROR_ALREADY_EXISTS
-    }
-}
-
 fn main() -> eframe::Result {
-    if already_running() {
-        use windows::core::w;
-        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
-        unsafe {
-            MessageBoxW(
-                None,
-                w!("Kwick は既に起動しています。ホットキーまたはタスクトレイのアイコンから開けます。"),
-                w!("Kwick"),
-                MB_OK | MB_ICONINFORMATION,
-            );
+    // --hidden: start resident without showing the window (used by startup registration)
+    let start_visible = !std::env::args().any(|a| a == "--hidden");
+
+    // Launching again just brings up the running instance.
+    if instance::already_running() {
+        if start_visible && !instance::signal_show() {
+            use windows::core::w;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MessageBoxW, MB_ICONINFORMATION, MB_OK,
+            };
+            unsafe {
+                MessageBoxW(
+                    None,
+                    w!("Kwick は既に起動しています。ホットキーまたはタスクトレイのアイコンから開けます。"),
+                    w!("Kwick"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
         }
         return Ok(());
     }
 
-    // --hidden: start resident without showing the window (used by startup registration)
-    let start_visible = !std::env::args().any(|a| a == "--hidden");
     let cfg = config::load();
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([cfg.width, cfg.height])
