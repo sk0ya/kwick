@@ -2,6 +2,7 @@ pub mod apps;
 pub mod convert;
 pub mod folders;
 pub mod pathbin;
+pub mod pathnav;
 pub mod registered;
 pub mod shellfolders;
 pub mod sysops;

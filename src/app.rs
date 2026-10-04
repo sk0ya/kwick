@@ -52,6 +52,9 @@ pub struct KwickApp {
     currency: providers::convert::Currency,
     /// Exchange rates were being downloaded at the last search.
     rates_pending: bool,
+    /// Listing of the folder being browsed (typed path), reused while only
+    /// the name part changes.
+    dir_cache: Option<(std::path::PathBuf, Vec<Item>)>,
 
     view: View,
     /// Hotkey text being edited in the settings view (applied on lost focus).
@@ -645,6 +648,7 @@ impl KwickApp {
             clip_history,
             currency: Default::default(),
             rates_pending: false,
+            dir_cache: None,
             view: View::Search,
             ext_drafts: Vec::new(),
             startup_enabled: crate::startup::is_enabled(),
@@ -709,6 +713,7 @@ impl KwickApp {
         self.selected = 0;
         self.panel = None;
         self.args_prompt = None;
+        self.dir_cache = None;
         self.had_focus = false;
         self.ime_composing = false;
         self.needs_search = true; // populate the most-used view
@@ -1097,8 +1102,24 @@ impl KwickApp {
             return;
         }
 
-        // Search modes entered by a prefix ("w " windows, "kill " ...).
+        // A typed path browses the file system.
         let raw = self.query.trim_start().to_string();
+        if providers::pathnav::is_path(&raw) {
+            let expanded = providers::pathnav::expand(&raw);
+            let (dir, partial) = providers::pathnav::split(&expanded);
+            let items = match &self.dir_cache {
+                Some((cached, items)) if *cached == dir => items.clone(),
+                _ => {
+                    let items = providers::pathnav::list(&dir);
+                    self.dir_cache = Some((dir, items.clone()));
+                    items
+                }
+            };
+            self.show_filtered(items, &partial);
+            return;
+        }
+
+        // Search modes entered by a prefix ("w " windows, "kill " ...).
         let prefixes = self.config.prefixes.clone();
         if let Some(rest) = mode_rest(&raw, &prefixes.windows) {
             let items = providers::winlist::list(self.ctl.raw_hwnd());
@@ -1633,6 +1654,9 @@ impl eframe::App for KwickApp {
             if keys.action_panel {
                 self.open_panel();
             }
+            if keys.tab {
+                self.complete();
+            }
             if let Some(shortcut) = keys.submit {
                 self.trigger(ctx, shortcut);
             }
@@ -1893,6 +1917,25 @@ impl eframe::App for KwickApp {
 }
 
 impl KwickApp {
+    /// Tab: step into the selected folder (or, while browsing a path, take
+    /// the selected file's path); on a mode entry, enter the mode.
+    fn complete(&mut self) {
+        let Some(item) = self.results.get(self.selected) else {
+            return;
+        };
+        let browsing = providers::pathnav::is_path(self.query.trim_start());
+        let text = match &item.action {
+            Action::SetQuery(text) => Some(text.clone()),
+            _ => providers::pathnav::completion(item)
+                .filter(|path| browsing || path.ends_with('\\')),
+        };
+        if let Some(text) = text {
+            self.query = text;
+            self.cursor_to_end = true;
+            self.needs_search = true;
+        }
+    }
+
     fn open_panel(&mut self) {
         let Some(item) = self.results.get(self.selected).cloned() else {
             return;
